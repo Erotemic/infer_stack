@@ -9,4 +9,5 @@ model_list:
       model: openai/{{ svc.served_model_name }}
       api_base: http://vllm-{{ svc.service_name }}:8000/v1
       api_key: os.environ/VLLM_BACKEND_API_KEY
+      merge_reasoning_content_in_choices: true
 {% endfor %}
