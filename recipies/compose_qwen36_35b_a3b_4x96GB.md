@@ -5,11 +5,12 @@ This is the shortest end-to-end example for serving **Qwen/Qwen3.6-35B-A3B** on 
 This profile uses:
 
 - one model instance
-- all 4 GPUs
-- tensor parallel size 4
+- GPUs 0 and 1
+- tensor parallel size 2
 - text-only mode
 - native **262,144** token context
 - the Qwen reasoning parser
+- higher batching and concurrency for more users
 - Open WebUI on top of LiteLLM
 
 ---
@@ -18,12 +19,6 @@ This profile uses:
 
 ```bash
 cd /path/to/vllm_service
-```
-
-Optional sanity check:
-
-```bash
-nvidia-smi --query-gpu=index,name,memory.total --format=csv
 ```
 
 ---
@@ -55,10 +50,10 @@ models:
     context_window: 262144
     defaults:
       max_model_len: 262144
-      gpu_memory_utilization: 0.90
+      gpu_memory_utilization: 0.95
       enable_prefix_caching: false
-      max_num_batched_tokens: 4096
-      max_num_seqs: 2
+      max_num_batched_tokens: 8192
+      max_num_seqs: 8
 
 profiles:
   qwen3.6-35b-a3b-tp2-262k-local:
@@ -77,9 +72,9 @@ profiles:
           tensor_parallel_size: 2
         runtime:
           max_model_len: 262144
-          gpu_memory_utilization: 0.90
-          max_num_batched_tokens: 4096
-          max_num_seqs: 2
+          gpu_memory_utilization: 0.95
+          max_num_batched_tokens: 8192
+          max_num_seqs: 8
           enable_prefix_caching: false
         extra_args:
           - --language-model-only
@@ -97,7 +92,13 @@ EOF
 ## 4. Switch to the local profile
 
 ```bash
-python manage.py switch qwen3.6-35b-a3b-tp4-262k-local
+python manage.py switch qwen3.6-35b-a3b-tp2-262k-local
+```
+
+Optional sanity check before rendering:
+
+```bash
+python manage.py describe-profile qwen3.6-35b-a3b-tp2-262k-local --format yaml
 ```
 
 ---
@@ -146,7 +147,8 @@ docker compose -f generated/docker-compose.yml --env-file generated/.env up -d
 Check that the model is exposed:
 
 ```bash
-curl http://127.0.0.1:18000/v1/models   -H "Authorization: Bearer $(grep '^VLLM_BACKEND_API_KEY=' generated/.env | cut -d= -f2-)"
+curl http://127.0.0.1:18000/v1/models \
+  -H "Authorization: Bearer $(grep '^VLLM_BACKEND_API_KEY=' generated/.env | cut -d= -f2-)"
 ```
 
 You should see:
@@ -176,7 +178,9 @@ Then select the model:
 From the repo root:
 
 ```bash
-python manage.py smoke-test   --model qwen3.6-35b-a3b-262k   --prompt "Say hello in one sentence."
+python manage.py smoke-test \
+  --model qwen3.6-35b-a3b-262k \
+  --prompt "Say hello in one sentence."
 ```
 
 ---
@@ -186,8 +190,10 @@ python manage.py smoke-test   --model qwen3.6-35b-a3b-262k   --prompt "Say hello
 This profile serves:
 
 - `Qwen/Qwen3.6-35B-A3B`
-- on 4 x 96GB GPUs
-- with tensor parallel size 4
+- on 2 of the 4 x 96GB GPUs
+- with tensor parallel size 2
 - at 262,144 token context
+- with `max_num_batched_tokens: 8192`
+- with `max_num_seqs: 8`
 - with `--reasoning-parser qwen3`
 - through both the direct backend and Open WebUI
