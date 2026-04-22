@@ -4,9 +4,10 @@ This is the shortest end-to-end example for serving **Qwen/Qwen3.6-35B-A3B** on 
 
 This profile uses:
 
-- one model instance
-- GPUs 0 and 1
-- tensor parallel size 2
+- two model instances
+- GPUs 0 and 1 for one instance
+- GPUs 2 and 3 for one instance
+- tensor parallel size 2 per instance
 - text-only mode
 - native **262,144** token context
 - the Qwen reasoning parser
@@ -41,7 +42,7 @@ models:
   qwen3.6-35b-a3b-local:
     hf_model_id: Qwen/Qwen3.6-35B-A3B
     tokenizer_name: Qwen/Qwen3.6-35B-A3B
-    served_model_name: qwen3.6-35b-a3b-262k
+    served_model_name: qwen3.6-35b-a3b
     family: qwen3.6
     modalities: [text]
     memory_class_gib: 80
@@ -56,15 +57,15 @@ models:
       max_num_seqs: 8
 
 profiles:
-  qwen3.6-35b-a3b-tp2-262k-local:
-    description: "Single Qwen3.6-35B-A3B service across 2 GPUs at 262k context."
+  qwen3.6-35b-a3b-dual-tp2-262k-local:
+    description: "Two Qwen3.6-35B-A3B tp=2 services across 4 GPUs at 262k context."
     vllm:
       enable_responses_api_store: false
       logging_level: INFO
     services:
-      - service_name: qwen36-35b
+      - service_name: qwen36-35b-gpu01
         model: qwen3.6-35b-a3b-local
-        served_model_name: qwen3.6-35b-a3b-262k
+        served_model_name: qwen3.6-35b-a3b-gpu01
         placement:
           strategy: exact
           gpu_indices: [0, 1]
@@ -81,9 +82,29 @@ profiles:
           - --reasoning-parser
           - qwen3
 
+      - service_name: qwen36-35b-gpu23
+        model: qwen3.6-35b-a3b-local
+        served_model_name: qwen3.6-35b-a3b-gpu23
+        placement:
+          strategy: exact
+          gpu_indices: [2, 3]
+        topology:
+          tensor_parallel_size: 2
+        runtime:
+          max_model_len: 262144
+          gpu_memory_utilization: 0.95
+          max_num_batched_tokens: 8192
+          max_num_seqs: 8
+          enable_prefix_caching: false
+        extra_args:
+          - --language-model-only
+          - --reasoning-parser
+          - qwen3
+
     router:
       aliases:
-        qwen3.6-35b-a3b-262k: qwen36-35b
+        qwen3.6-35b-a3b-gpu01: qwen36-35b-gpu01
+        qwen3.6-35b-a3b-gpu23: qwen36-35b-gpu23
 EOF
 ```
 
@@ -92,13 +113,13 @@ EOF
 ## 4. Switch to the local profile
 
 ```bash
-python manage.py switch qwen3.6-35b-a3b-tp2-262k-local
+python manage.py switch qwen3.6-35b-a3b-dual-tp2-262k-local
 ```
 
 Optional sanity check before rendering:
 
 ```bash
-python manage.py describe-profile qwen3.6-35b-a3b-tp2-262k-local --format yaml
+python manage.py describe-profile qwen3.6-35b-a3b-dual-tp2-262k-local --format yaml
 ```
 
 ---
@@ -144,16 +165,16 @@ docker compose -f generated/docker-compose.yml --env-file generated/.env up -d
 
 ## 8. Verify the backend
 
-Check that the model is exposed:
+Check that both model endpoints are exposed:
 
 ```bash
-curl http://127.0.0.1:18000/v1/models \
-  -H "Authorization: Bearer $(grep '^VLLM_BACKEND_API_KEY=' generated/.env | cut -d= -f2-)"
+curl http://127.0.0.1:14000/v1/models   -H "Authorization: Bearer $(grep '^LITELLM_MASTER_KEY=' generated/.env | cut -d= -f2-)"
 ```
 
 You should see:
 
-- `qwen3.6-35b-a3b-262k`
+- `qwen3.6-35b-a3b-gpu01`
+- `qwen3.6-35b-a3b-gpu23`
 
 ---
 
@@ -167,20 +188,21 @@ http://127.0.0.1:13000
 
 On first run, create the Open WebUI admin account.
 
-Then select the model:
+Then select one of the models:
 
-- `qwen3.6-35b-a3b-262k`
+- `qwen3.6-35b-a3b-gpu01`
+- `qwen3.6-35b-a3b-gpu23`
 
 ---
 
-## 10. Optional repo smoke test
+## 10. Optional repo smoke tests
 
 From the repo root:
 
 ```bash
-python manage.py smoke-test \
-  --model qwen3.6-35b-a3b-262k \
-  --prompt "Say hello in one sentence."
+python manage.py smoke-test   --model qwen3.6-35b-a3b-gpu01   --prompt "Say hello in one sentence."
+
+python manage.py smoke-test   --model qwen3.6-35b-a3b-gpu23   --prompt "Say hello in one sentence."
 ```
 
 ---
@@ -190,10 +212,11 @@ python manage.py smoke-test \
 This profile serves:
 
 - `Qwen/Qwen3.6-35B-A3B`
-- on 2 of the 4 x 96GB GPUs
-- with tensor parallel size 2
+- as two TP2 instances across all 4 x 96GB GPUs
 - at 262,144 token context
 - with `max_num_batched_tokens: 8192`
 - with `max_num_seqs: 8`
 - with `--reasoning-parser qwen3`
 - through both the direct backend and Open WebUI
+
+Note: with the current repo templates, each backend instance is exposed as its own LiteLLM model name.
