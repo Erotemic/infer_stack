@@ -36,6 +36,55 @@ python manage.py switch pythia-qwen3.6-mixed-4x96 --apply
 recreates `litellm` + `open-webui` in place so the new alias list takes
 effect. Postgres volumes are not touched.
 
+### Restarting only the Qwen container
+
+If you change Qwen settings (for example, the tool-call parser) and
+you do not want to disturb the Pythia containers — they may be in
+active use — re-render and recreate only the Qwen vLLM service:
+
+```bash
+python manage.py render
+docker compose -f generated/docker-compose.yml --env-file generated/.env \
+  up -d --no-deps --force-recreate vllm-qwen36-35b
+```
+
+`--no-deps` prevents Compose from touching `postgres-litellm`,
+`postgres-open-webui`, `litellm`, `open-webui`, or the Pythia vLLM
+services. To confirm the rendered service name first:
+
+```bash
+docker compose -f generated/docker-compose.yml --env-file generated/.env ps
+```
+
+Avoid `docker compose down`, `down -v`, or a profile-wide
+`up --force-recreate` for this — they will disrupt the Pythia
+containers you are trying to keep running.
+
+### Tool calling
+
+Per the `Qwen/Qwen3.6-35B-A3B` model card, the recommended vLLM flags
+for this model are:
+
+```text
+--reasoning-parser qwen3
+--enable-auto-tool-choice
+--tool-call-parser qwen3_coder
+--language-model-only
+```
+
+(also: `vllm >= 0.19.0`, which the pinned image satisfies).
+
+The mixed profile renders all four automatically from the Qwen
+service's `reasoning`, `tool_calling`, and `extra_args` metadata, so
+clients like Kilo Code that send `tool_choice: "auto"` work out of the
+box.
+
+If `qwen3_coder` parses tool calls poorly against your specific prompts,
+`qwen3_xml` is a manual fallback worth testing — but it is not what the
+model card recommends. To try it, change the `parser:` value in
+`default-profiles.yaml` (or in a local `models.yaml` override) and rerun
+the targeted Qwen restart above.
+
 ---
 
 ## 2. Set your Hugging Face token (Qwen3.6 is gated)

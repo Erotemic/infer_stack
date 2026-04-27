@@ -339,6 +339,95 @@ def test_pythia_profile_does_not_emit_reasoning_flags(tmp_path: Path) -> None:
     assert "--reasoning-parser" not in compose_text
 
 
+def test_mixed_profile_qwen_renders_tool_call_flags_pythia_does_not(tmp_path: Path) -> None:
+    """Qwen3.6-35B-A3B model card requires:
+
+      --reasoning-parser qwen3
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --language-model-only
+
+    Pythia services must not get any tool-call flags.
+    """
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+
+    qwen_block = blocks["vllm-qwen36-35b"]
+    # All four model-card-recommended flags are present.
+    assert "--enable-auto-tool-choice" in qwen_block
+    assert "--tool-call-parser" in qwen_block
+    assert '"qwen3_coder"' in qwen_block
+    assert "--reasoning-parser" in qwen_block
+    assert '"qwen3"' in qwen_block
+    assert "--language-model-only" in qwen_block
+    # qwen3_xml is only a manual fallback, never rendered for this profile.
+    assert "qwen3_xml" not in qwen_block
+
+    for pythia_name in ("vllm-pythia-69b", "vllm-pythia-28b"):
+        block = blocks[pythia_name]
+        assert "--enable-auto-tool-choice" not in block, pythia_name
+        assert "--tool-call-parser" not in block, pythia_name
+        assert "qwen3_coder" not in block, pythia_name
+        assert "qwen3_xml" not in block, pythia_name
+
+
+def test_mixed_profile_qwen_command_arg_order_matches_model_card(tmp_path: Path) -> None:
+    """Lock down the exact command-line tokens for the Qwen service.
+
+    The Qwen3.6-35B-A3B model card lists these together; we want each
+    parser flag's value to immediately follow the flag (vLLM positional
+    contract). This catches regressions where a value gets dropped or
+    reordered into another argument.
+    """
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+    qwen_block = blocks["vllm-qwen36-35b"]
+
+    # Each flag is immediately followed by its value on the next rendered line.
+    for flag, value in (
+        ("--reasoning-parser", "qwen3"),
+        ("--tool-call-parser", "qwen3_coder"),
+    ):
+        assert flag in qwen_block
+        flag_idx = qwen_block.index(flag)
+        following = qwen_block[flag_idx:]
+        first_value_line = next(
+            line.strip() for line in following.splitlines()[1:] if line.strip()
+        )
+        assert first_value_line == f'- "{value}"', (flag, first_value_line)
+
+
+def test_mixed_profile_litellm_config_unchanged_by_tool_calling(tmp_path: Path) -> None:
+    """Adding tool_calling on a service must not perturb the LiteLLM config."""
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+    by_alias = {m["model_name"]: m["litellm_params"] for m in cfg_doc["model_list"]}
+
+    qwen = by_alias["qwen3.6-35b-a3b"]
+    assert qwen["model"] == "openai/qwen3.6-35b-a3b"
+    assert qwen.get("merge_reasoning_content_in_choices") is True
+    # No tool-calling-specific keys leak into LiteLLM params.
+    assert "tools" not in qwen
+    assert "tool_choice" not in qwen
+    assert "enable_auto_tool_choice" not in qwen
+
+    assert by_alias["eleutherai/pythia-6.9b"]["model"] == "text-completion-openai/eleutherai/pythia-6.9b"
+    assert by_alias["eleutherai/pythia-2.8b-v0"]["model"] == "text-completion-openai/eleutherai/pythia-2.8b-v0"
+
+
+def test_mixed_profile_compose_service_names_are_stable(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    blocks = _split_compose_blocks((tmp_path / "generated" / "docker-compose.yml").read_text())
+    vllm_services = sorted(name for name in blocks if name.startswith("vllm-"))
+    assert vllm_services == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
+
+
 def test_no_profile_renders_unsupported_enable_reasoning_flag(tmp_path: Path) -> None:
     """Regression: vLLM CLI rejects --enable-reasoning."""
     for profile_name, inventory in (

@@ -25,7 +25,7 @@ PINNED_IMAGES = {
     "postgres": "postgres:16.8",
     "open_webui": "ghcr.io/open-webui/open-webui:v0.8.6",
     "litellm": "ghcr.io/berriai/litellm:v1.81.3-stable",
-    "vllm": "vllm/vllm-openai:v0.19.0",
+    "vllm": "vllm/vllm-openai:v0.19.1",
 }
 
 DEFAULT_PORTS = {

@@ -92,6 +92,12 @@ profiles:
           enabled: true
           parser: qwen3
           expose_to_openwebui: true
+        # qwen3_coder matches the Qwen/Qwen3.6-35B-A3B model-card
+        # recommendation. qwen3_xml is a manual fallback to try only if
+        # qwen3_coder parses your specific tool calls poorly.
+        tool_calling:
+          enabled: true
+          parser: qwen3_coder
         extra_args:
           - --language-model-only
 

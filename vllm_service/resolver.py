@@ -77,7 +77,10 @@ def _resolve_service(
     tool_calling = deepcopy(model.get("tool_calling", {}))
     tool_calling = {**tool_calling, **deepcopy(service.get("tool_calling", {}))}
     tool_call_parser = tool_calling.get("parser")
-    enable_auto_tool_choice = bool(tool_calling.get("auto", False) and tool_call_parser)
+    # `enabled` is the canonical key (matches the reasoning schema); `auto` is
+    # accepted as a synonym for older built-in model entries.
+    tool_calling_on = bool(tool_calling.get("enabled", tool_calling.get("auto", False)))
+    enable_auto_tool_choice = bool(tool_calling_on and tool_call_parser)
 
     hf_model_id = service.get("hf_model_id", model.get("hf_model_id", ""))
     model_url = service.get("url") or model.get("url") or (f"hf://{hf_model_id}" if hf_model_id else "")
