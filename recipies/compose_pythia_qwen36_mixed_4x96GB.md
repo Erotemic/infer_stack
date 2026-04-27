@@ -10,8 +10,8 @@ GPUs**:
 | `pythia-69b`  | `EleutherAI/pythia-6.9b`    | 2      | completions  |
 | `pythia-28b`  | `EleutherAI/pythia-2.8b-v0` | 3      | completions  |
 
-The Qwen service has `--enable-reasoning --reasoning-parser qwen3`
-auto-rendered by the profile. The two Pythia services are routed
+The Qwen service has `--reasoning-parser qwen3` auto-rendered by the
+profile (vLLM enables reasoning whenever a parser is set). The two Pythia services are routed
 through LiteLLM as `text-completion-openai/...` so chat-shaped requests
 from Open WebUI are translated into upstream `/v1/completions` calls.
 

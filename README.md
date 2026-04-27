@@ -187,10 +187,10 @@ reasoning:
 ```
 
 Profiles can override or set the same field per service. When a
-service has `reasoning.enabled: true`, the renderer adds
-`--enable-reasoning --reasoning-parser <parser>` to that vLLM
-container's command line — you do not need to repeat those flags by
-hand in `extra_args`.
+service has `reasoning.enabled: true` and a `parser`, the renderer
+adds `--reasoning-parser <parser>` to that vLLM container's command
+line — that flag alone enables reasoning extraction in the current
+vLLM CLI. You do not need to repeat it by hand in `extra_args`.
 
 Open WebUI sees reasoning content via two paths:
 

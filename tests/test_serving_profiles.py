@@ -325,9 +325,10 @@ def test_qwen3_6_reasoning_profile_emits_reasoning_flags(tmp_path: Path) -> None
     render_compose_artifacts(tmp_path, {"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     qwen_block = compose_text.split("vllm-qwen36-35b:", 1)[1].split("vllm-pythia-69b:", 1)[0]
-    assert "--enable-reasoning" in qwen_block
     assert "--reasoning-parser" in qwen_block
     assert '"qwen3"' in qwen_block
+    # vLLM CLI does not accept --enable-reasoning; the parser flag alone enables it.
+    assert "--enable-reasoning" not in qwen_block
 
 
 def test_pythia_profile_does_not_emit_reasoning_flags(tmp_path: Path) -> None:
@@ -336,6 +337,20 @@ def test_pythia_profile_does_not_emit_reasoning_flags(tmp_path: Path) -> None:
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     assert "--enable-reasoning" not in compose_text
     assert "--reasoning-parser" not in compose_text
+
+
+def test_no_profile_renders_unsupported_enable_reasoning_flag(tmp_path: Path) -> None:
+    """Regression: vLLM CLI rejects --enable-reasoning."""
+    for profile_name, inventory in (
+        ("pythia-qwen3.6-mixed-4x96", "4x96"),
+        ("qwen3.6-35b-a3b-dual-tp2-4x96", "4x96"),
+        ("helm-pythia-6.9b", "1x96"),
+        ("qwen2-5-7b-instruct-turbo-default", "1x96"),
+    ):
+        deployment = _deployment(tmp_path, profile_name, inventory=inventory)
+        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+        assert "--enable-reasoning" not in compose_text, profile_name
 
 
 def test_litellm_keeps_merge_reasoning_for_reasoning_models(tmp_path: Path) -> None:
@@ -407,9 +422,10 @@ def test_qwen3_6_dual_tp2_4x96_profile_resolves_and_renders(tmp_path: Path) -> N
     assert "vllm-qwen36-35b-gpu01" in blocks
     assert "vllm-qwen36-35b-gpu23" in blocks
     for name in ("vllm-qwen36-35b-gpu01", "vllm-qwen36-35b-gpu23"):
-        assert "--enable-reasoning" in blocks[name]
+        assert "--reasoning-parser" in blocks[name]
         assert '"qwen3"' in blocks[name]
         assert "--language-model-only" in blocks[name]
+        assert "--enable-reasoning" not in blocks[name]
 
     cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
     by_alias = {m["model_name"]: m["litellm_params"]["model"] for m in cfg_doc["model_list"]}
