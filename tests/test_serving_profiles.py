@@ -269,6 +269,125 @@ def test_validation_accepts_chat_for_chat_capable_profile(tmp_path: Path) -> Non
     assert deployment["services"][0]["protocol_mode"] == "chat"
 
 
+def test_litellm_completions_profile_uses_text_completion_provider(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "helm-pythia-6.9b", inventory="1x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
+    assert "text-completion-openai/eleutherai/pythia-6.9b" in litellm_text
+    # Make sure we're not also emitting the bare openai/ provider for the same model.
+    cfg_doc = yaml.safe_load(litellm_text)
+    pythia_entry = next(m for m in cfg_doc["model_list"] if m["model_name"] == "eleutherai/pythia-6.9b")
+    assert pythia_entry["litellm_params"]["model"] == "text-completion-openai/eleutherai/pythia-6.9b"
+    # Even though it's completions-only, the alias must remain in model_list
+    # so Open WebUI can still see/select it.
+    advertised = {m["model_name"] for m in cfg_doc["model_list"]}
+    assert "eleutherai/pythia-6.9b" in advertised
+
+
+def test_litellm_chat_profile_does_not_use_text_completion_provider(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "qwen2-5-7b-instruct-turbo-default", inventory="1x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
+    assert "text-completion-openai" not in litellm_text
+    assert "openai/qwen/qwen2.5-7b-instruct-turbo" in litellm_text
+    # Chat models keep merge_reasoning_content_in_choices so Open WebUI can
+    # display reasoning when LiteLLM normalizes it into message content.
+    assert "merge_reasoning_content_in_choices: true" in litellm_text
+
+
+def test_pythia_routing_end_to_end_unit_check(tmp_path: Path) -> None:
+    """One-shot regression covering the Pythia routing contract.
+
+    Compose label, LiteLLM provider, alias visibility, and the smoke-test
+    protocol picker should agree that this profile is completions.
+    """
+    deployment = _deployment(tmp_path, "helm-pythia-6.9b", inventory="1x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
+    cfg_doc = yaml.safe_load(litellm_text)
+
+    # Compose label.
+    assert 'vllm_service.protocol_mode: "completions"' in compose_text
+    # LiteLLM provider.
+    pythia_entry = next(m for m in cfg_doc["model_list"] if m["model_name"] == "eleutherai/pythia-6.9b")
+    assert pythia_entry["litellm_params"]["model"] == "text-completion-openai/eleutherai/pythia-6.9b"
+    # Alias is still advertised (Open WebUI can see it).
+    assert any(m["model_name"] == "eleutherai/pythia-6.9b" for m in cfg_doc["model_list"])
+    # Resolved deployment service is completions and matches the alias target.
+    svc = deployment["services"][0]
+    assert svc["protocol_mode"] == "completions"
+    assert "eleutherai/pythia-6.9b" in svc["served_aliases"]
+
+
+def test_qwen3_6_reasoning_profile_emits_reasoning_flags(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    qwen_block = compose_text.split("vllm-qwen36-35b:", 1)[1].split("vllm-pythia-69b:", 1)[0]
+    assert "--enable-reasoning" in qwen_block
+    assert "--reasoning-parser" in qwen_block
+    assert '"qwen3"' in qwen_block
+
+
+def test_pythia_profile_does_not_emit_reasoning_flags(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "helm-pythia-6.9b", inventory="1x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    assert "--enable-reasoning" not in compose_text
+    assert "--reasoning-parser" not in compose_text
+
+
+def test_litellm_keeps_merge_reasoning_for_reasoning_models(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+    qwen_entry = next(m for m in cfg_doc["model_list"] if m["model_name"] == "qwen3.6-35b-a3b")
+    assert qwen_entry["litellm_params"]["merge_reasoning_content_in_choices"] is True
+
+
+def test_pythia_qwen3_6_mixed_profile_resolves_on_4x96(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    services = {s["service_name"]: s for s in deployment["services"]}
+    assert set(services) == {"qwen36-35b", "pythia-69b", "pythia-28b"}
+
+    qwen = services["qwen36-35b"]
+    assert qwen["protocol_mode"] == "chat"
+    assert qwen["gpu_indices"] == [0, 1]
+    assert qwen["tensor_parallel_size"] == 2
+    assert qwen["reasoning_enabled"] is True
+    assert qwen["reasoning_parser"] == "qwen3"
+
+    p69 = services["pythia-69b"]
+    assert p69["protocol_mode"] == "completions"
+    assert p69["gpu_indices"] == [2]
+    assert p69["reasoning_enabled"] is False
+
+    p28 = services["pythia-28b"]
+    assert p28["protocol_mode"] == "completions"
+    assert p28["gpu_indices"] == [3]
+
+
+def test_pythia_qwen3_6_mixed_profile_renders_compose_and_litellm(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+
+    # Three vLLM services and two Postgres services.
+    vllm_services = [name for name in blocks if name.startswith("vllm-")]
+    assert sorted(vllm_services) == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
+    assert "postgres-open-webui" in blocks
+    assert "postgres-litellm" in blocks
+    assert "postgres-init" not in blocks
+
+    cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+    by_alias = {m["model_name"]: m["litellm_params"]["model"] for m in cfg_doc["model_list"]}
+    assert by_alias["qwen3.6-35b-a3b"].startswith("openai/")
+    assert by_alias["eleutherai/pythia-6.9b"] == "text-completion-openai/eleutherai/pythia-6.9b"
+    assert by_alias["eleutherai/pythia-2.8b-v0"] == "text-completion-openai/eleutherai/pythia-2.8b-v0"
+
+
 def test_kubeai_protocol_validation_applies(tmp_path: Path) -> None:
     from vllm_service.config import initial_config
 

@@ -83,6 +83,12 @@ def _resolve_service(
     model_url = service.get("url") or model.get("url") or (f"hf://{hf_model_id}" if hf_model_id else "")
     benchmark_transport = deepcopy(service.get("benchmark_transport", service.get("transport", {})))
 
+    reasoning = deepcopy(model.get("reasoning", {}) or {})
+    reasoning.update(deepcopy(service.get("reasoning", {}) or {}))
+    reasoning_enabled = bool(reasoning.get("enabled", False))
+    reasoning_parser = reasoning.get("parser") if reasoning_enabled else None
+    reasoning_expose_to_openwebui = bool(reasoning.get("expose_to_openwebui", reasoning_enabled))
+
     return {
         "service_name": service["service_name"],
         "profile_name": service["profile_name"],
@@ -125,6 +131,9 @@ def _resolve_service(
         "enable_auto_tool_choice": enable_auto_tool_choice,
         "tool_call_parser": tool_call_parser,
         "extra_args": deepcopy(service.get("extra_args", model.get("defaults", {}).get("extra_args", []))),
+        "reasoning_enabled": reasoning_enabled,
+        "reasoning_parser": reasoning_parser,
+        "reasoning_expose_to_openwebui": reasoning_expose_to_openwebui,
         "benchmark_transport": benchmark_transport,
     }
 

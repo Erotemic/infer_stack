@@ -79,6 +79,13 @@ services:
       - --tool-call-parser
       - "{{ svc.tool_call_parser }}"
 {% endif %}
+{% if svc.reasoning_enabled %}
+      - --enable-reasoning
+{% if svc.reasoning_parser %}
+      - --reasoning-parser
+      - "{{ svc.reasoning_parser }}"
+{% endif %}
+{% endif %}
 {% for extra_arg in svc.extra_args %}
       - "{{ extra_arg }}"
 {% endfor %}

@@ -165,11 +165,54 @@ Practical guidance:
   base do not define a chat template. Their HELM profiles use
   `protocol_mode: completions` and the `smoke-test` command will
   exercise `/v1/completions` for them.
-* Open WebUI is a chat frontend. Completions-only models will appear in
-  its model list (because LiteLLM advertises them) but will not render
-  usefully through the chat UI without an explicit chat-template
-  strategy. Use `smoke-test` or a direct `/v1/completions` client for
-  these profiles.
+* The rendered LiteLLM config uses `text-completion-openai/<served>`
+  as the upstream provider for completions-only services. That means
+  even chat-shaped requests sent through Open WebUI to a Pythia model
+  get translated by LiteLLM into upstream `/v1/completions` calls — no
+  second vLLM container is needed to support Open WebUI for a
+  completions-only model.
+* Open WebUI is still a chat UI, so prompt formatting matters.
+  HELM/eval clients should call `/v1/completions` directly for exact
+  prompt control rather than going through the chat frontend.
+
+### Reasoning / thinking models
+
+Models can declare reasoning support in the catalog:
+
+```yaml
+reasoning:
+  enabled: true
+  parser: qwen3
+  expose_to_openwebui: true
+```
+
+Profiles can override or set the same field per service. When a
+service has `reasoning.enabled: true`, the renderer adds
+`--enable-reasoning --reasoning-parser <parser>` to that vLLM
+container's command line — you do not need to repeat those flags by
+hand in `extra_args`.
+
+Open WebUI sees reasoning content via two paths:
+
+1. Inline `<think>...</think>` tags emitted by the model.
+2. Structured `reasoning_content` fields when LiteLLM normalizes them.
+
+The LiteLLM template keeps `merge_reasoning_content_in_choices: true`
+on chat-mode entries so Open WebUI can display reasoning in the
+streamed response. To test reasoning end-to-end:
+
+```bash
+# Direct LiteLLM curl (streaming):
+source generated/.env
+curl -N http://127.0.0.1:14000/v1/chat/completions \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.6-35b-a3b","stream":true,
+       "messages":[{"role":"user","content":"Think step by step: 17*23"}]}'
+```
+
+In Open WebUI, reasoning shows up best with streaming enabled in the
+chat settings.
 
 ---
 
