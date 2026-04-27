@@ -1,49 +1,35 @@
 services:
-  postgres:
+  postgres-open-webui:
     image: {{ lock.deployment.images.postgres }}
-    container_name: shared-postgress
+    container_name: postgres-open-webui
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${OPENWEBUI_POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${OPENWEBUI_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${OPENWEBUI_POSTGRES_PASSWORD}
     volumes:
-      - {{ lock.deployment.state.postgres }}:/var/lib/postgresql/data
+      - {{ lock.deployment.state.postgres_open_webui }}:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 10
 
-  postgres-init:
+  postgres-litellm:
     image: {{ lock.deployment.images.postgres }}
-    container_name: postgres-init
-    restart: "no"
-    depends_on:
-      postgres:
-        condition: service_healthy
+    container_name: postgres-litellm
+    restart: unless-stopped
     environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGUSER: ${POSTGRES_USER}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      OPENWEBUI_POSTGRES_DB: ${OPENWEBUI_POSTGRES_DB}
-      LITELLM_POSTGRES_DB: ${LITELLM_POSTGRES_DB}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        for db in "$$OPENWEBUI_POSTGRES_DB" "$$LITELLM_POSTGRES_DB"; do
-          if [ -z "$$db" ]; then continue; fi
-          exists=$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'") || exit 1
-          if [ "$$exists" != "1" ]; then
-            echo "Creating database $$db";
-            psql -c "CREATE DATABASE \"$$db\" OWNER \"$$PGUSER\"" || exit 1
-          else
-            echo "Database $$db already exists";
-          fi
-        done
+      POSTGRES_DB: ${LITELLM_POSTGRES_DB}
+      POSTGRES_USER: ${LITELLM_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${LITELLM_POSTGRES_PASSWORD}
+    volumes:
+      - {{ lock.deployment.state.postgres_litellm }}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 {% for svc in lock.deployment.services %}
   vllm-{{ svc.service_name }}:
@@ -120,8 +106,8 @@ services:
     container_name: litellm
     restart: unless-stopped
     depends_on:
-      postgres-init:
-        condition: service_completed_successfully
+      postgres-litellm:
+        condition: service_healthy
 {% for svc in lock.deployment.services %}
       vllm-{{ svc.service_name }}:
         condition: service_healthy
@@ -129,7 +115,7 @@ services:
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       VLLM_BACKEND_API_KEY: ${VLLM_BACKEND_API_KEY}
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${LITELLM_POSTGRES_DB}
+      DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER}:${LITELLM_POSTGRES_PASSWORD}@postgres-litellm:5432/${LITELLM_POSTGRES_DB}
     command:
       - --config
       - /app/config.yaml
@@ -147,14 +133,14 @@ services:
     container_name: open-webui
     restart: unless-stopped
     depends_on:
-      postgres-init:
-        condition: service_completed_successfully
+      postgres-open-webui:
+        condition: service_healthy
       litellm:
         condition: service_started
     environment:
       WEBUI_AUTH: "True"
       ENABLE_PERSISTENT_CONFIG: "False"
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${OPENWEBUI_POSTGRES_DB}
+      DATABASE_URL: postgresql://${OPENWEBUI_POSTGRES_USER}:${OPENWEBUI_POSTGRES_PASSWORD}@postgres-open-webui:5432/${OPENWEBUI_POSTGRES_DB}
       OPENAI_API_BASE_URL: http://litellm:4000/v1
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}

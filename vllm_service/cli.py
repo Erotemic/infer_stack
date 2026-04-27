@@ -123,7 +123,8 @@ def _configured_state_paths(state_root: str) -> dict[str, str]:
     return {
         "hf_cache": str(base / "hf-cache"),
         "open_webui": str(base / "open-webui"),
-        "postgres": str(base / "postgres"),
+        "postgres_open_webui": str(base / "postgres-open-webui"),
+        "postgres_litellm": str(base / "postgres-litellm"),
         "runtime": str(base / "runtime"),
     }
 
@@ -732,6 +733,41 @@ def _infer_default_base_url(cfg: dict[str, Any], args: argparse.Namespace) -> st
     return default_base_url(deployment, explicit=args.base_url)
 
 
+def _resolve_smoke_test_protocol(
+    cfg: dict[str, Any],
+    args: argparse.Namespace,
+    model_name: str,
+) -> str:
+    """Pick the OpenAI route to exercise in smoke-test.
+
+    Order of precedence:
+      1. ``--protocol`` CLI override (``chat`` or ``completions``).
+      2. Resolved deployment: if the requested model maps to a service whose
+         protocol_mode is known, use that.
+      3. Active profile's primary service protocol_mode.
+      4. Fallback: ``chat``.
+    """
+    explicit = getattr(args, "protocol", None)
+    if explicit:
+        return str(explicit)
+    try:
+        plan = build_plan(
+            cfg,
+            profile_name=getattr(args, "profile", None),
+            allow_unsupported=effective_allow_unsupported(args, cfg),
+            inventory=effective_inventory(args),
+        )
+    except Exception:
+        return "chat"
+    services = plan.get("deployment", {}).get("services", [])
+    for svc in services:
+        if model_name in svc.get("served_aliases", []) or model_name == svc.get("served_model_name"):
+            return str(svc.get("protocol_mode") or "chat")
+    if services:
+        return str(services[0].get("protocol_mode") or "chat")
+    return "chat"
+
+
 def cmd_smoke_test(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
     env = parse_env_file(runtime_env_path(cfg)) if backend_name(cfg) == "compose" else {}
@@ -750,12 +786,22 @@ def cmd_smoke_test(args: argparse.Namespace) -> int:
     if not models:
         raise SystemExit("No models returned from /models")
     model_name = args.model or models[0]["id"]
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": args.prompt}],
-        "max_tokens": args.max_tokens,
-    }
-    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=120)
+    protocol = _resolve_smoke_test_protocol(cfg, args, model_name)
+    if protocol == "completions":
+        payload = {
+            "model": model_name,
+            "prompt": args.prompt,
+            "max_tokens": args.max_tokens,
+        }
+        endpoint = f"{base_url}/completions"
+    else:
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": args.prompt}],
+            "max_tokens": args.max_tokens,
+        }
+        endpoint = f"{base_url}/chat/completions"
+    resp = requests.post(endpoint, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     print(json.dumps(resp.json(), indent=2))
     return 0
@@ -929,13 +975,32 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_status)
 
     s = sub.add_parser("smoke-test")
-    add_override_args(s, include_backend=True, include_ports=True, include_cluster=True)
+    add_override_args(
+        s,
+        include_profile=True,
+        include_backend=True,
+        include_ports=True,
+        include_cluster=True,
+    )
     s.add_argument("--base-url", default=None)
     s.add_argument("--api-key", default=None)
     s.add_argument("--model", default=None)
     s.add_argument("--prompt", default="Say hello in one sentence.")
     s.add_argument("--max-tokens", type=int, default=128)
     s.add_argument("--skip-chat", action="store_true")
+    s.add_argument(
+        "--protocol",
+        choices=["chat", "completions"],
+        default=None,
+        help="Force the smoke-test endpoint to /v1/chat/completions or /v1/completions. "
+             "Defaults to the resolved profile's protocol_mode.",
+    )
+    s.add_argument(
+        "--allow-unsupported",
+        action="store_true",
+        help="Allow protocol resolution to use a profile that has validation errors.",
+    )
+    s.add_argument("--simulate-hardware", default=None, metavar="NxM")
     s.set_defaults(func=cmd_smoke_test)
 
     return p

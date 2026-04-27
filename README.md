@@ -90,32 +90,43 @@ Open WebUI volume are preserved across `down`, `up`, `switch`, and `render`.
 
 ### Persistent state and database layout
 
-Compose runs a single Postgres instance that hosts two separate logical
-databases:
+Compose runs **two** separate Postgres containers:
 
-* `OPENWEBUI_POSTGRES_DB` (default: `openwebui`) — Open WebUI chats,
-  accounts, and settings.
-* `LITELLM_POSTGRES_DB` (default: `litellm`) — LiteLLM router state.
+* `postgres-open-webui` — used only by Open WebUI for chats, accounts,
+  and settings. Backed by `state.postgres_open_webui`.
+* `postgres-litellm` — used only by LiteLLM for router state. Backed by
+  `state.postgres_litellm`.
 
-A short-lived `postgres-init` service idempotently creates whichever of
-these databases is missing on every `up`. It is safe on both fresh and
-already-initialized Postgres volumes (Docker's
-`/docker-entrypoint-initdb.d` scripts only run on a fresh volume).
+Each container has its own `POSTGRES_DB`, `POSTGRES_USER`, and
+`POSTGRES_PASSWORD`, sourced from `.env` keys:
 
-Open WebUI chat history is persistent and is **not** tied to the model
-currently being served. After a profile switch, old chats may reference
-model IDs that the router no longer advertises — that is expected.
+* `OPENWEBUI_POSTGRES_DB` / `_USER` / `_PASSWORD`
+* `LITELLM_POSTGRES_DB` / `_USER` / `_PASSWORD`
 
-### Migrating an existing deployment
+There is no shared Postgres instance and no `postgres-init` bootstrap
+service — each container creates its own database the first time its
+volume is initialized.
 
-If your existing `generated/.env` only has `POSTGRES_DB`, the renderer
-seeds `OPENWEBUI_POSTGRES_DB` from that legacy value so existing chat
-history stays attached to the same database. `LITELLM_POSTGRES_DB`
-defaults to `litellm`; the next `up` will create it automatically.
+Open WebUI chat history lives in the Open WebUI Postgres
+container/volume. LiteLLM state lives in the LiteLLM Postgres
+container/volume. Chat history is **not** tied to the model currently
+being served, so after a profile switch old chats may reference model
+IDs the router no longer advertises — that is expected.
 
-You do not need to delete any volume. If you ever want a destructive
-reset, do it explicitly with `docker compose down -v` against
-`generated/docker-compose.yml` — the toolchain itself never does this.
+### Operational tips
+
+Prefer scoping commands to specific services rather than relying on
+container names:
+
+```bash
+docker compose -f generated/docker-compose.yml --env-file generated/.env logs -f litellm
+docker compose -f generated/docker-compose.yml --env-file generated/.env exec postgres-open-webui psql -U "$OPENWEBUI_POSTGRES_USER" "$OPENWEBUI_POSTGRES_DB"
+```
+
+You do not need to delete any volume during normal operation. If you
+ever want a destructive reset, do it explicitly with
+`docker compose down -v` against `generated/docker-compose.yml` — the
+toolchain itself never does this.
 
 ### Custom .env values are preserved
 
@@ -136,7 +147,29 @@ stack up convergently with `--remove-orphans` (so vLLM services that
 are no longer in the rendered compose file are dropped), and — if the
 LiteLLM router config changed — force-recreates the `litellm` and
 `open-webui` containers in place so they pick up the new alias list.
-Postgres and the Open WebUI volume are not touched.
+Both Postgres volumes are left untouched.
+
+### Protocol modes for base vs. instruct models
+
+Profiles declare a `protocol_mode` (`chat` or `completions`) that the
+served model must support. Models also declare which protocols they
+support via `supported_protocols`. Validation runs before render and
+fails with an actionable message if a profile asks for `chat` on a
+completions-only model.
+
+Practical guidance:
+
+* Instruct/chat models (with a chat template) can use either, but
+  default to `chat`.
+* Base models like Pythia, Llama-2 base, Mistral-v0.1 base, and Falcon
+  base do not define a chat template. Their HELM profiles use
+  `protocol_mode: completions` and the `smoke-test` command will
+  exercise `/v1/completions` for them.
+* Open WebUI is a chat frontend. Completions-only models will appear in
+  its model list (because LiteLLM advertises them) but will not render
+  usefully through the chat UI without an explicit chat-template
+  strategy. Use `smoke-test` or a direct `/v1/completions` client for
+  these profiles.
 
 ---
 

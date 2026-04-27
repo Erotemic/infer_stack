@@ -48,8 +48,20 @@ def validate_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"service {svc['service_name']} is missing logical_model_name")
         if not svc.get("served_model_name"):
             errors.append(f"service {svc['service_name']} is missing served_model_name")
-        if not svc.get("protocol_mode"):
+        protocol_mode = svc.get("protocol_mode")
+        if not protocol_mode:
             errors.append(f"service {svc['service_name']} is missing protocol_mode")
+        else:
+            supported = list(svc.get("supported_protocols") or [])
+            if supported and protocol_mode not in supported:
+                profile_name = svc.get("profile_name") or svc.get("profile_public_name") or svc["service_name"]
+                model_ref = svc.get("model_ref") or svc.get("base_model") or "<unknown-model>"
+                supported_repr = ", ".join(supported)
+                errors.append(
+                    f"Profile {profile_name} requests protocol_mode={protocol_mode}, "
+                    f"but model {model_ref} supports only [{supported_repr}]. "
+                    f"Use protocol_mode: {supported[0]} or provide an explicit chat template."
+                )
 
         if svc.get("placement_error"):
             errors.append(f"service {svc['service_name']} placement failed: {svc['placement_error']}")

@@ -408,11 +408,11 @@ def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
 
     state_root = tmp_path / "state"
     sentinel_open_webui = state_root / "open-webui" / "sentinel.txt"
-    sentinel_postgres = state_root / "postgres" / "sentinel.txt"
-    sentinel_open_webui.parent.mkdir(parents=True, exist_ok=True)
-    sentinel_postgres.parent.mkdir(parents=True, exist_ok=True)
-    sentinel_open_webui.write_text("keep", encoding="utf-8")
-    sentinel_postgres.write_text("keep", encoding="utf-8")
+    sentinel_postgres_owui = state_root / "postgres-open-webui" / "sentinel.txt"
+    sentinel_postgres_litellm = state_root / "postgres-litellm" / "sentinel.txt"
+    for sentinel in (sentinel_open_webui, sentinel_postgres_owui, sentinel_postgres_litellm):
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("keep", encoding="utf-8")
 
     invocations: list[list[str]] = []
 
@@ -441,8 +441,8 @@ def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
     flat = [" ".join(c) for c in invocations]
     assert not any("down -v" in c or "--volumes" in c for c in flat)
     assert not any("rm -rf" in c for c in flat)
-    assert sentinel_open_webui.exists() and sentinel_open_webui.read_text() == "keep"
-    assert sentinel_postgres.exists() and sentinel_postgres.read_text() == "keep"
+    for sentinel in (sentinel_open_webui, sentinel_postgres_owui, sentinel_postgres_litellm):
+        assert sentinel.exists() and sentinel.read_text() == "keep"
 
 
 def test_kubeai_status_namespace_error_is_actionable(tmp_path: Path, monkeypatch) -> None:
@@ -471,3 +471,113 @@ def test_kubeai_status_namespace_error_is_actionable(tmp_path: Path, monkeypatch
         raise AssertionError("expected cmd_status to raise SystemExit")
     assert "namespace 'default'" in text
     assert "setup --backend kubeai --namespace default" in text
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+def _smoke_test_args(**overrides) -> argparse.Namespace:
+    base = dict(
+        profile=None,
+        backend=None,
+        compose_cmd=None,
+        litellm_port=None,
+        open_webui_port=None,
+        postgres_port=None,
+        namespace=None,
+        ingress_host=None,
+        ingress_enabled=None,
+        base_url="http://127.0.0.1:14000/v1",
+        api_key=None,
+        model=None,
+        prompt="Say hello in one sentence.",
+        max_tokens=64,
+        skip_chat=False,
+        protocol=None,
+        allow_unsupported=False,
+        simulate_hardware="1x96",
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _setup_compose(tmp_path: Path, profile: str) -> None:
+    run_cli(tmp_path, "setup", "--backend", "compose", "--profile", profile)
+    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+
+
+def test_smoke_test_uses_chat_endpoint_for_chat_profiles(tmp_path: Path, monkeypatch) -> None:
+    _setup_compose(tmp_path, "qwen2-5-7b-instruct-turbo-default")
+    monkeypatch.chdir(tmp_path)
+    posted: dict[str, object] = {}
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse({"data": [{"id": "qwen2-5-7b-instruct-turbo-default"}]})
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        posted["url"] = url
+        posted["json"] = json
+        return _FakeResponse({"choices": [{"message": {"content": "hi"}}]})
+
+    monkeypatch.setattr(cli_mod.requests, "get", fake_get)
+    monkeypatch.setattr(cli_mod.requests, "post", fake_post)
+    cli_mod.cmd_smoke_test(_smoke_test_args(model="qwen2-5-7b-instruct-turbo-default"))
+    assert posted["url"].endswith("/chat/completions")
+    assert "messages" in posted["json"]
+    assert "prompt" not in posted["json"]
+
+
+def test_smoke_test_uses_completions_endpoint_for_completions_profiles(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _setup_compose(tmp_path, "helm-pythia-1b-v0")
+    monkeypatch.chdir(tmp_path)
+    posted: dict[str, object] = {}
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse({"data": [{"id": "eleutherai/pythia-1b-v0"}]})
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        posted["url"] = url
+        posted["json"] = json
+        return _FakeResponse({"choices": [{"text": "hi"}]})
+
+    monkeypatch.setattr(cli_mod.requests, "get", fake_get)
+    monkeypatch.setattr(cli_mod.requests, "post", fake_post)
+    cli_mod.cmd_smoke_test(_smoke_test_args(model="eleutherai/pythia-1b-v0"))
+    assert posted["url"].endswith("/completions")
+    assert not posted["url"].endswith("/chat/completions")
+    assert "prompt" in posted["json"]
+    assert "messages" not in posted["json"]
+
+
+def test_smoke_test_protocol_override_forces_completions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _setup_compose(tmp_path, "qwen2-5-7b-instruct-turbo-default")
+    monkeypatch.chdir(tmp_path)
+    posted: dict[str, object] = {}
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse({"data": [{"id": "qwen2-5-7b-instruct-turbo-default"}]})
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        posted["url"] = url
+        posted["json"] = json
+        return _FakeResponse({"choices": [{"text": "hi"}]})
+
+    monkeypatch.setattr(cli_mod.requests, "get", fake_get)
+    monkeypatch.setattr(cli_mod.requests, "post", fake_post)
+    cli_mod.cmd_smoke_test(
+        _smoke_test_args(model="qwen2-5-7b-instruct-turbo-default", protocol="completions")
+    )
+    assert posted["url"].endswith("/completions")
+    assert "prompt" in posted["json"]

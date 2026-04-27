@@ -42,6 +42,11 @@ def normalize_model_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
         defaults = deepcopy(entry.get("defaults", {}))
         notes = list(entry.get("notes", []) or [])
         caveats = list(entry.get("caveats", []) or [])
+        supported_protocols = entry.get("supported_protocols")
+        if supported_protocols is None:
+            supported_protocols = ["chat", "completions"]
+        else:
+            supported_protocols = [str(p) for p in supported_protocols]
         normalized[key] = {
             "key": key,
             "canonical_key": sanitize_name(entry.get("canonical_key", key)),
@@ -49,6 +54,7 @@ def normalize_model_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
             "url": url,
             "family": entry.get("family", ""),
             "modalities": list(entry.get("modalities", ["text"])),
+            "supported_protocols": supported_protocols,
             "tokenizer_name": entry.get("tokenizer_name") or entry.get("tokenizer") or entry.get("served_model_name") or key,
             "logical_model_name": entry.get("logical_model_name") or entry.get("served_model_name") or key,
             "served_model_name": entry.get("served_model_name") or entry.get("logical_model_name") or key,

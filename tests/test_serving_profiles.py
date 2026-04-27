@@ -109,10 +109,66 @@ def test_load_profile_contract_uses_public_loader_for_qwen(tmp_path: Path) -> No
     assert contract["services"][0]["model"]["logical_model_name"] == "qwen/qwen2-72b-instruct"
 
 
-def test_compose_uses_separate_databases_for_litellm_and_openwebui(tmp_path: Path) -> None:
+def _split_compose_blocks(compose_text: str) -> dict[str, str]:
+    """Split a rendered docker-compose.yml into a {service_name: body} dict.
+
+    Service blocks start at column 2 (two-space indent) followed by the name
+    and a colon. Splitting this way avoids substring confusion between e.g.
+    ``open-webui:`` and ``postgres-open-webui:``.
+    """
+    import re
+    pattern = re.compile(r"(?m)^  ([a-zA-Z0-9_-]+):\s*$")
+    matches = list(pattern.finditer(compose_text))
+    blocks: dict[str, str] = {}
+    for i, m in enumerate(matches):
+        name = m.group(1)
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(compose_text)
+        blocks[name] = compose_text[start:end]
+    return blocks
+
+
+def test_compose_uses_separate_postgres_services(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
     render_compose_artifacts(tmp_path, {"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+
+    assert "postgres-open-webui" in blocks
+    assert "postgres-litellm" in blocks
+    assert "postgres-init" not in blocks
+    assert "postgres-init" not in compose_text
+    assert "shared-postgress" not in compose_text
+
+    owui_pg = blocks["postgres-open-webui"]
+    ll_pg = blocks["postgres-litellm"]
+    assert "${OPENWEBUI_POSTGRES_DB}" in owui_pg
+    assert "${OPENWEBUI_POSTGRES_USER}" in owui_pg
+    assert "${OPENWEBUI_POSTGRES_PASSWORD}" in owui_pg
+    assert "${LITELLM_POSTGRES_DB}" not in owui_pg
+    assert "${LITELLM_POSTGRES_DB}" in ll_pg
+    assert "${LITELLM_POSTGRES_USER}" in ll_pg
+    assert "${LITELLM_POSTGRES_PASSWORD}" in ll_pg
+    assert "${OPENWEBUI_POSTGRES_DB}" not in ll_pg
+
+
+def test_compose_router_and_ui_point_at_their_own_postgres(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+
+    litellm_block = blocks["litellm"]
+    openwebui_block = blocks["open-webui"]
+    assert "@postgres-litellm:5432/${LITELLM_POSTGRES_DB}" in litellm_block
+    assert "@postgres-open-webui:" not in litellm_block
+    assert "@postgres-open-webui:5432/${OPENWEBUI_POSTGRES_DB}" in openwebui_block
+    assert "@postgres-litellm:" not in openwebui_block
+
+
+def test_compose_env_uses_distinct_db_names_users_and_passwords(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
     env_text = (tmp_path / "generated" / ".env").read_text()
     env_kv = dict(
         line.split("=", 1)
@@ -121,14 +177,15 @@ def test_compose_uses_separate_databases_for_litellm_and_openwebui(tmp_path: Pat
     )
     assert env_kv["OPENWEBUI_POSTGRES_DB"] == "openwebui"
     assert env_kv["LITELLM_POSTGRES_DB"] == "litellm"
-    litellm_block = compose_text.split("litellm:", 1)[1].split("open-webui:", 1)[0]
-    openwebui_block = compose_text.split("open-webui:", 1)[1]
-    assert "${LITELLM_POSTGRES_DB}" in litellm_block
-    assert "${OPENWEBUI_POSTGRES_DB}" not in litellm_block
-    assert "${OPENWEBUI_POSTGRES_DB}" in openwebui_block
-    assert "${LITELLM_POSTGRES_DB}" not in openwebui_block
-    assert "postgres-init:" in compose_text
-    assert "CREATE DATABASE" in compose_text
+    assert env_kv["OPENWEBUI_POSTGRES_USER"] == "openwebui"
+    assert env_kv["LITELLM_POSTGRES_USER"] == "litellm"
+    assert env_kv["OPENWEBUI_POSTGRES_PASSWORD"]
+    assert env_kv["LITELLM_POSTGRES_PASSWORD"]
+    assert env_kv["OPENWEBUI_POSTGRES_PASSWORD"] != env_kv["LITELLM_POSTGRES_PASSWORD"]
+    # Old shared schema must not be emitted automatically.
+    assert "POSTGRES_DB" not in env_kv
+    assert "POSTGRES_USER" not in env_kv
+    assert "POSTGRES_PASSWORD" not in env_kv
 
 
 def test_env_rewrite_preserves_unknown_key_value_pairs(tmp_path: Path) -> None:
@@ -136,11 +193,11 @@ def test_env_rewrite_preserves_unknown_key_value_pairs(tmp_path: Path) -> None:
     generated.mkdir()
     (generated / ".env").write_text(
         "# user comment\n"
-        "POSTGRES_USER=openwebui\n"
-        "POSTGRES_PASSWORD=keepme\n"
+        "OPENWEBUI_POSTGRES_PASSWORD=keepme\n"
         "VERBOSE=1\n"
         "CUSTOM_THING=abc\n"
-        "HTTP_PROXY=http://proxy:3128\n",
+        "HTTP_PROXY=http://proxy:3128\n"
+        "NO_PROXY=localhost,127.0.0.1\n",
         encoding="utf-8",
     )
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
@@ -149,33 +206,99 @@ def test_env_rewrite_preserves_unknown_key_value_pairs(tmp_path: Path) -> None:
     assert "VERBOSE=1" in text
     assert "CUSTOM_THING=abc" in text
     assert "HTTP_PROXY=http://proxy:3128" in text
+    assert "NO_PROXY=localhost,127.0.0.1" in text
     assert "# user comment" in text
     env_kv = dict(
         line.split("=", 1)
         for line in text.splitlines()
         if line and "=" in line and not line.startswith("#")
     )
-    assert env_kv["POSTGRES_PASSWORD"] == "keepme"
+    # Existing managed values are preserved (password not rotated).
+    assert env_kv["OPENWEBUI_POSTGRES_PASSWORD"] == "keepme"
 
 
-def test_env_migrates_legacy_postgres_db_to_openwebui_db(tmp_path: Path) -> None:
-    generated = tmp_path / "generated"
-    generated.mkdir()
-    (generated / ".env").write_text(
-        "POSTGRES_DB=openwebui\nPOSTGRES_USER=openwebui\nPOSTGRES_PASSWORD=keepme\n",
-        encoding="utf-8",
+def test_helm_pythia_profiles_render_as_completions(tmp_path: Path) -> None:
+    for profile_name in ("helm-pythia-6.9b", "helm-pythia-2.8b-v0", "helm-pythia-1b-v0"):
+        deployment = _deployment(tmp_path, profile_name, inventory="1x96")
+        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+        assert 'vllm_service.protocol_mode: "completions"' in compose_text, profile_name
+        assert deployment["services"][0]["protocol_mode"] == "completions", profile_name
+
+
+def test_helm_base_model_profiles_render_as_completions(tmp_path: Path) -> None:
+    for profile_name in ("helm-llama-2-7b", "helm-mistral-7b-v0.1", "helm-falcon-7b"):
+        deployment = _deployment(tmp_path, profile_name, inventory="1x96")
+        assert deployment["services"][0]["protocol_mode"] == "completions", profile_name
+
+
+def test_validation_rejects_chat_protocol_for_completions_only_model(tmp_path: Path) -> None:
+    from vllm_service.config import initial_config
+
+    cfg = initial_config()
+    cfg["backend"] = "compose"
+    cfg["state"] = {
+        "hf_cache": "state/hf-cache",
+        "open_webui": "state/open-webui",
+        "postgres_open_webui": "state/postgres-open-webui",
+        "postgres_litellm": "state/postgres-litellm",
+        "runtime": "state/runtime",
+    }
+    cfg["ports"] = {"litellm": 14000, "open_webui": 13000, "postgres": 15432}
+    cfg["profiles"] = {
+        "broken-pythia-chat": {
+            "description": "Synthetic invalid profile: chat on a completions-only model.",
+            "base_model": "pythia-1b-v0",
+            "public_name": "broken-pythia-chat",
+            "protocol_mode": "chat",
+        }
+    }
+    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="broken-pythia-chat")
+    report = validate_resolved(deployment)
+    assert report["ok"] is False
+    joined = " | ".join(report["errors"])
+    assert "broken-pythia-chat" in joined
+    assert "completions" in joined
+    assert "pythia-1b-v0" in joined
+
+
+def test_validation_accepts_chat_for_chat_capable_profile(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "qwen2-5-7b-instruct-turbo-default", inventory="1x96")
+    report = validate_resolved(deployment)
+    assert report["ok"] is True, report
+    assert deployment["services"][0]["protocol_mode"] == "chat"
+
+
+def test_kubeai_protocol_validation_applies(tmp_path: Path) -> None:
+    from vllm_service.config import initial_config
+
+    cfg = initial_config()
+    cfg["backend"] = "kubeai"
+    cfg["resource_profiles"] = {
+        "gpu-single-default": {
+            "node_selector": {"nvidia.com/gpu.product": "X"},
+            "requests": {"nvidia.com/gpu": 1},
+            "limits": {"nvidia.com/gpu": 1},
+        },
+    }
+    cfg["profiles"] = {
+        "broken-pythia-chat-kubeai": {
+            "description": "Synthetic invalid profile: chat on a completions-only model.",
+            "base_model": "pythia-1b-v0",
+            "public_name": "broken-pythia-chat-kubeai",
+            "protocol_mode": "chat",
+            "resource_profile": "gpu-single-default:1",
+        }
+    }
+    deployment = resolve(
+        tmp_path, cfg, inventory=simulate_inventory("1x96"),
+        profile_name="broken-pythia-chat-kubeai",
     )
-    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
-    env_text = (generated / ".env").read_text()
-    env_kv = dict(
-        line.split("=", 1)
-        for line in env_text.splitlines()
-        if line and "=" in line and not line.startswith("#")
-    )
-    assert env_kv["OPENWEBUI_POSTGRES_DB"] == "openwebui"
-    assert env_kv["LITELLM_POSTGRES_DB"] == "litellm"
-    assert env_kv.get("POSTGRES_DB") == "openwebui"
+    report = validate_resolved(deployment)
+    assert report["ok"] is False
+    joined = " | ".join(report["errors"])
+    assert "broken-pythia-chat-kubeai" in joined
+    assert "completions" in joined
 
 
 def test_load_profile_contract_uses_public_loader_for_gpt_oss_variants(tmp_path: Path) -> None:

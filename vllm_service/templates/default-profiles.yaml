@@ -681,6 +681,7 @@ profiles:
     services:
       - service_name: helm-main
         model: llama-2-7b
+        protocol_mode: completions
         placement:
           strategy: first_fit
           gpu_count: 1
@@ -711,6 +712,7 @@ profiles:
     services:
       - service_name: helm-main
         model: mistral-7b-v0.1
+        protocol_mode: completions
         placement:
           strategy: first_fit
           gpu_count: 1
@@ -726,6 +728,7 @@ profiles:
     services:
       - service_name: helm-main
         model: falcon-7b
+        protocol_mode: completions
         placement:
           strategy: first_fit
           gpu_count: 1
@@ -756,6 +759,7 @@ profiles:
     services:
       - service_name: helm-main
         model: pythia-6.9b
+        protocol_mode: completions
         placement:
           strategy: first_fit
           gpu_count: 1
@@ -771,6 +775,7 @@ profiles:
     services:
       - service_name: helm-main
         model: pythia-2.8b-v0
+        protocol_mode: completions
         placement:
           strategy: first_fit
           gpu_count: 1
@@ -786,6 +791,7 @@ profiles:
     services:
       - service_name: helm-main
         model: pythia-1b-v0
+        protocol_mode: completions
         placement:
           strategy: first_fit
           gpu_count: 1

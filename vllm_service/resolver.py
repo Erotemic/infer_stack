@@ -95,6 +95,7 @@ def _resolve_service(
         "served_model_name": service.get("served_model_name", model.get("served_model_name", model_key)),
         "served_aliases": deepcopy(service.get("served_aliases", [])),
         "protocol_mode": service.get("protocol_mode", "chat"),
+        "supported_protocols": list(model.get("supported_protocols", ["chat", "completions"])),
         "modalities": model.get("modalities", ["text"]),
         "features": deepcopy(model.get("features", ["TextGeneration"])),
         "engine": str(service.get("engine", model.get("engine", "VLLM"))).upper(),

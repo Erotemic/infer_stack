@@ -13,22 +13,6 @@ def _template(name: str) -> str:
     return files("vllm_service").joinpath(f"templates/{name}").read_text(encoding="utf-8")
 
 
-def _resolve_postgres_db_names(existing: dict[str, str]) -> tuple[str, str]:
-    """Pick database names for Open WebUI and LiteLLM.
-
-    Backward compatibility: if a legacy ``POSTGRES_DB`` is present and the
-    new ``OPENWEBUI_POSTGRES_DB`` key is absent, seed the Open WebUI database
-    name from the legacy value so existing chats remain associated with the
-    same database. ``LITELLM_POSTGRES_DB`` defaults to ``litellm``.
-    """
-    legacy = existing.get("POSTGRES_DB", "").strip()
-    openwebui_db = existing.get("OPENWEBUI_POSTGRES_DB", "").strip()
-    if not openwebui_db:
-        openwebui_db = legacy or "openwebui"
-    litellm_db = existing.get("LITELLM_POSTGRES_DB", "").strip() or "litellm"
-    return openwebui_db, litellm_db
-
-
 def render_compose_artifacts(root: Path, lock_data: dict) -> None:
     generated = root / "generated"
     generated.mkdir(parents=True, exist_ok=True)
@@ -40,23 +24,19 @@ def render_compose_artifacts(root: Path, lock_data: dict) -> None:
 
     env_path = generated / ".env"
     existing = parse_env_file(env_path)
-    openwebui_db, litellm_db = _resolve_postgres_db_names(existing)
 
     env_values = {
-        "POSTGRES_USER": existing.get("POSTGRES_USER", "openwebui"),
-        "POSTGRES_PASSWORD": ensure_secret(existing, "POSTGRES_PASSWORD"),
-        "OPENWEBUI_POSTGRES_DB": openwebui_db,
-        "LITELLM_POSTGRES_DB": litellm_db,
+        "OPENWEBUI_POSTGRES_DB": existing.get("OPENWEBUI_POSTGRES_DB", "openwebui"),
+        "OPENWEBUI_POSTGRES_USER": existing.get("OPENWEBUI_POSTGRES_USER", "openwebui"),
+        "OPENWEBUI_POSTGRES_PASSWORD": ensure_secret(existing, "OPENWEBUI_POSTGRES_PASSWORD"),
+        "LITELLM_POSTGRES_DB": existing.get("LITELLM_POSTGRES_DB", "litellm"),
+        "LITELLM_POSTGRES_USER": existing.get("LITELLM_POSTGRES_USER", "litellm"),
+        "LITELLM_POSTGRES_PASSWORD": ensure_secret(existing, "LITELLM_POSTGRES_PASSWORD"),
         "LITELLM_MASTER_KEY": ensure_secret(existing, "LITELLM_MASTER_KEY"),
         "VLLM_BACKEND_API_KEY": ensure_secret(existing, "VLLM_BACKEND_API_KEY"),
         "WEBUI_SECRET_KEY": ensure_secret(existing, "WEBUI_SECRET_KEY"),
         "HF_TOKEN": existing.get("HF_TOKEN", ""),
     }
-    # Keep the legacy POSTGRES_DB in sync if it was already present, so older
-    # external tooling that still reads it sees a sensible value. Never
-    # introduce it for fresh installs.
-    if "POSTGRES_DB" in existing:
-        env_values["POSTGRES_DB"] = openwebui_db
 
     write_env_file(env_path, env_values)
 
