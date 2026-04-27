@@ -27,7 +27,7 @@ from .config import (
     save_yaml,
 )
 from .contracts import load_profile_contract
-from .docker_utils import compose_down, compose_up
+from .docker_utils import compose_down, compose_recreate_router, compose_up
 from .env_utils import parse_env_file
 from .exporters import export_benchmark_bundle
 from .hardware import simulate_inventory
@@ -449,6 +449,10 @@ def cmd_up(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
     if backend_name(cfg) != "compose":
         raise SystemExit("`up` only supports the compose backend. Use `deploy` for kubeai.")
+    prior_litellm_cfg: str | None = None
+    prior_path = runtime_litellm_config_path(cfg)
+    if prior_path.exists():
+        prior_litellm_cfg = prior_path.read_text(encoding="utf-8")
     if has_runtime_overrides(args) or render_is_stale(cfg):
         render_args = argparse.Namespace(
             profile=getattr(args, "profile", None),
@@ -462,13 +466,31 @@ def cmd_up(args: argparse.Namespace) -> int:
             simulate_hardware=getattr(args, "simulate_hardware", None),
         )
         cmd_render(render_args)
+    compose_file = generated_dir() / "docker-compose.yml"
+    env_file = generated_dir() / ".env"
     compose_up(
         cfg["runtime"]["compose_cmd"],
-        generated_dir() / "docker-compose.yml",
-        generated_dir() / ".env",
+        compose_file,
+        env_file,
         detach=args.detach,
         remove_orphans=True,
     )
+    new_path = runtime_litellm_config_path(cfg)
+    new_litellm_cfg = new_path.read_text(encoding="utf-8") if new_path.exists() else None
+    if (
+        args.detach
+        and prior_litellm_cfg is not None
+        and new_litellm_cfg is not None
+        and prior_litellm_cfg != new_litellm_cfg
+    ):
+        # Router config changed since the last render. Force-recreate the
+        # router and UI in place so they re-read the new alias list.
+        compose_recreate_router(
+            cfg["runtime"]["compose_cmd"],
+            compose_file,
+            env_file,
+            detach=True,
+        )
     return 0
 
 
@@ -485,6 +507,13 @@ def cmd_switch(args: argparse.Namespace) -> int:
     persisted_cfg["active_profile"] = args.profile
     save_yaml(config_path(), persisted_cfg)
     cfg = apply_config_overrides(persisted_cfg, args)
+
+    prior_litellm_cfg: str | None = None
+    if backend_name(cfg) == "compose":
+        prior_path = runtime_litellm_config_path(cfg)
+        if prior_path.exists():
+            prior_litellm_cfg = prior_path.read_text(encoding="utf-8")
+
     plan = build_plan(
         cfg,
         profile_name=args.profile,
@@ -496,18 +525,30 @@ def cmd_switch(args: argparse.Namespace) -> int:
     render_from_lock(root_dir(), plan)
     if args.apply:
         if backend_name(cfg) == "compose":
-            compose_down(
-                cfg["runtime"]["compose_cmd"],
-                generated_dir() / "docker-compose.yml",
-                generated_dir() / ".env",
-            )
+            compose_file = generated_dir() / "docker-compose.yml"
+            env_file = generated_dir() / ".env"
+            # Bring the stack up convergently. --remove-orphans drops vLLM
+            # services no longer in the rendered compose file. We never run
+            # `down -v` or anything that would touch the Postgres/Open WebUI
+            # volumes.
             compose_up(
                 cfg["runtime"]["compose_cmd"],
-                generated_dir() / "docker-compose.yml",
-                generated_dir() / ".env",
-                detach=False,
+                compose_file,
+                env_file,
+                detach=True,
                 remove_orphans=True,
             )
+            new_litellm_cfg = runtime_litellm_config_path(cfg).read_text(encoding="utf-8")
+            if prior_litellm_cfg != new_litellm_cfg:
+                # The router config (model aliases, upstream URLs) changed.
+                # Recreate litellm + open-webui in place so they pick up the
+                # new alias list. Persistent volumes are not touched.
+                compose_recreate_router(
+                    cfg["runtime"]["compose_cmd"],
+                    compose_file,
+                    env_file,
+                    detach=True,
+                )
         else:
             deploy_rendered_artifacts(root_dir(), plan["deployment"])
     print(f"Switched active_profile to {args.profile}")

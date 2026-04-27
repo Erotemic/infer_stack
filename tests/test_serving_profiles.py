@@ -109,6 +109,75 @@ def test_load_profile_contract_uses_public_loader_for_qwen(tmp_path: Path) -> No
     assert contract["services"][0]["model"]["logical_model_name"] == "qwen/qwen2-72b-instruct"
 
 
+def test_compose_uses_separate_databases_for_litellm_and_openwebui(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    env_text = (tmp_path / "generated" / ".env").read_text()
+    env_kv = dict(
+        line.split("=", 1)
+        for line in env_text.splitlines()
+        if line and "=" in line and not line.startswith("#")
+    )
+    assert env_kv["OPENWEBUI_POSTGRES_DB"] == "openwebui"
+    assert env_kv["LITELLM_POSTGRES_DB"] == "litellm"
+    litellm_block = compose_text.split("litellm:", 1)[1].split("open-webui:", 1)[0]
+    openwebui_block = compose_text.split("open-webui:", 1)[1]
+    assert "${LITELLM_POSTGRES_DB}" in litellm_block
+    assert "${OPENWEBUI_POSTGRES_DB}" not in litellm_block
+    assert "${OPENWEBUI_POSTGRES_DB}" in openwebui_block
+    assert "${LITELLM_POSTGRES_DB}" not in openwebui_block
+    assert "postgres-init:" in compose_text
+    assert "CREATE DATABASE" in compose_text
+
+
+def test_env_rewrite_preserves_unknown_key_value_pairs(tmp_path: Path) -> None:
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    (generated / ".env").write_text(
+        "# user comment\n"
+        "POSTGRES_USER=openwebui\n"
+        "POSTGRES_PASSWORD=keepme\n"
+        "VERBOSE=1\n"
+        "CUSTOM_THING=abc\n"
+        "HTTP_PROXY=http://proxy:3128\n",
+        encoding="utf-8",
+    )
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    text = (generated / ".env").read_text()
+    assert "VERBOSE=1" in text
+    assert "CUSTOM_THING=abc" in text
+    assert "HTTP_PROXY=http://proxy:3128" in text
+    assert "# user comment" in text
+    env_kv = dict(
+        line.split("=", 1)
+        for line in text.splitlines()
+        if line and "=" in line and not line.startswith("#")
+    )
+    assert env_kv["POSTGRES_PASSWORD"] == "keepme"
+
+
+def test_env_migrates_legacy_postgres_db_to_openwebui_db(tmp_path: Path) -> None:
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    (generated / ".env").write_text(
+        "POSTGRES_DB=openwebui\nPOSTGRES_USER=openwebui\nPOSTGRES_PASSWORD=keepme\n",
+        encoding="utf-8",
+    )
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    env_text = (generated / ".env").read_text()
+    env_kv = dict(
+        line.split("=", 1)
+        for line in env_text.splitlines()
+        if line and "=" in line and not line.startswith("#")
+    )
+    assert env_kv["OPENWEBUI_POSTGRES_DB"] == "openwebui"
+    assert env_kv["LITELLM_POSTGRES_DB"] == "litellm"
+    assert env_kv.get("POSTGRES_DB") == "openwebui"
+
+
 def test_load_profile_contract_uses_public_loader_for_gpt_oss_variants(tmp_path: Path) -> None:
     root = _write_root_config(tmp_path)
     completions = load_profile_contract(

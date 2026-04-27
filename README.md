@@ -85,6 +85,59 @@ curl http://127.0.0.1:14000/v1/chat/completions \
 python manage.py down
 ```
 
+`down` never removes named volumes. The Postgres data directory and the
+Open WebUI volume are preserved across `down`, `up`, `switch`, and `render`.
+
+### Persistent state and database layout
+
+Compose runs a single Postgres instance that hosts two separate logical
+databases:
+
+* `OPENWEBUI_POSTGRES_DB` (default: `openwebui`) — Open WebUI chats,
+  accounts, and settings.
+* `LITELLM_POSTGRES_DB` (default: `litellm`) — LiteLLM router state.
+
+A short-lived `postgres-init` service idempotently creates whichever of
+these databases is missing on every `up`. It is safe on both fresh and
+already-initialized Postgres volumes (Docker's
+`/docker-entrypoint-initdb.d` scripts only run on a fresh volume).
+
+Open WebUI chat history is persistent and is **not** tied to the model
+currently being served. After a profile switch, old chats may reference
+model IDs that the router no longer advertises — that is expected.
+
+### Migrating an existing deployment
+
+If your existing `generated/.env` only has `POSTGRES_DB`, the renderer
+seeds `OPENWEBUI_POSTGRES_DB` from that legacy value so existing chat
+history stays attached to the same database. `LITELLM_POSTGRES_DB`
+defaults to `litellm`; the next `up` will create it automatically.
+
+You do not need to delete any volume. If you ever want a destructive
+reset, do it explicitly with `docker compose down -v` against
+`generated/docker-compose.yml` — the toolchain itself never does this.
+
+### Custom .env values are preserved
+
+`generated/.env` is rewritten non-destructively. Any `KEY=value` pair
+you add manually (for example `VERBOSE=1`, `HF_HOME=/data/hf`, or any
+key this program does not yet know about) is preserved across
+`render`, `setup`, `switch`, `up`, and `deploy`. Comments and the order
+of existing lines are preserved where practical.
+
+### Switching profiles
+
+```bash
+python manage.py switch <profile> --apply
+```
+
+`switch --apply` re-renders from the updated `config.yaml`, brings the
+stack up convergently with `--remove-orphans` (so vLLM services that
+are no longer in the rendered compose file are dropped), and — if the
+LiteLLM router config changed — force-recreates the `litellm` and
+`open-webui` containers in place so they pick up the new alias list.
+Postgres and the Open WebUI volume are not touched.
+
 ---
 
 ## Backend 2: KubeAI

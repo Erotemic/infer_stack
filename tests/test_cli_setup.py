@@ -348,6 +348,103 @@ def test_switch_apply_persists_only_active_profile_and_uses_transient_overrides(
     assert observed["profile"] == "qwen2-5-7b-instruct-turbo-default"
 
 
+def test_switch_apply_compose_recreates_router_when_config_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_cli(
+        tmp_path,
+        "setup",
+        "--backend",
+        "compose",
+        "--profile",
+        "gpt-oss-20b-chat",
+    )
+    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    monkeypatch.chdir(tmp_path)
+
+    invocations: list[list[str]] = []
+
+    def fake_run(cmd: list[str]) -> None:
+        invocations.append(list(cmd))
+
+    import vllm_service.docker_utils as du
+    monkeypatch.setattr(du, "run", fake_run)
+
+    args = argparse.Namespace(
+        profile="qwen2-5-7b-instruct-turbo-default",
+        backend=None,
+        compose_cmd=None,
+        litellm_port=None,
+        open_webui_port=None,
+        postgres_port=None,
+        namespace=None,
+        ingress_host=None,
+        ingress_enabled=None,
+        apply=True,
+        allow_unsupported=False,
+        simulate_hardware="1x96",
+    )
+    cli_mod.cmd_switch(args)
+
+    flat = [" ".join(c) for c in invocations]
+    assert not any("down -v" in c or "--volumes" in c for c in flat)
+    assert any(" up " in c and "-d" in c.split() for c in flat)
+    assert any("--force-recreate" in c and "litellm" in c and "open-webui" in c for c in flat)
+
+
+def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_cli(
+        tmp_path,
+        "setup",
+        "--backend",
+        "compose",
+        "--profile",
+        "gpt-oss-20b-chat",
+    )
+    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    monkeypatch.chdir(tmp_path)
+
+    state_root = tmp_path / "state"
+    sentinel_open_webui = state_root / "open-webui" / "sentinel.txt"
+    sentinel_postgres = state_root / "postgres" / "sentinel.txt"
+    sentinel_open_webui.parent.mkdir(parents=True, exist_ok=True)
+    sentinel_postgres.parent.mkdir(parents=True, exist_ok=True)
+    sentinel_open_webui.write_text("keep", encoding="utf-8")
+    sentinel_postgres.write_text("keep", encoding="utf-8")
+
+    invocations: list[list[str]] = []
+
+    def fake_run(cmd: list[str]) -> None:
+        invocations.append(list(cmd))
+
+    import vllm_service.docker_utils as du
+    monkeypatch.setattr(du, "run", fake_run)
+
+    args = argparse.Namespace(
+        profile="qwen2-5-7b-instruct-turbo-default",
+        backend=None,
+        compose_cmd=None,
+        litellm_port=None,
+        open_webui_port=None,
+        postgres_port=None,
+        namespace=None,
+        ingress_host=None,
+        ingress_enabled=None,
+        apply=True,
+        allow_unsupported=False,
+        simulate_hardware="1x96",
+    )
+    cli_mod.cmd_switch(args)
+
+    flat = [" ".join(c) for c in invocations]
+    assert not any("down -v" in c or "--volumes" in c for c in flat)
+    assert not any("rm -rf" in c for c in flat)
+    assert sentinel_open_webui.exists() and sentinel_open_webui.read_text() == "keep"
+    assert sentinel_postgres.exists() and sentinel_postgres.read_text() == "keep"
+
+
 def test_kubeai_status_namespace_error_is_actionable(tmp_path: Path, monkeypatch) -> None:
     run_cli(tmp_path, "setup", "--backend", "kubeai", "--profile", "qwen2-5-7b-instruct-turbo-default", "--namespace", "default")
     monkeypatch.chdir(tmp_path)
