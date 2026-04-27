@@ -127,6 +127,61 @@ profiles:
         eleutherai/pythia-6.9b: pythia-69b
         eleutherai/pythia-2.8b-v0: pythia-28b
 
+  qwen3.6-35b-a3b-dual-tp2-4x96:
+    description: "Two Qwen3.6-35B-A3B tp=2 services across 4x96GB GPUs at 262k context."
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: qwen36-35b-gpu01
+        model: qwen3.6-35b-a3b
+        served_model_name: qwen3.6-35b-a3b-gpu01
+        protocol_mode: chat
+        placement:
+          strategy: exact
+          gpu_indices: [0, 1]
+        topology:
+          tensor_parallel_size: 2
+        runtime:
+          max_model_len: 262144
+          gpu_memory_utilization: 0.95
+          max_num_batched_tokens: 8192
+          max_num_seqs: 8
+          enable_prefix_caching: false
+        reasoning:
+          enabled: true
+          parser: qwen3
+          expose_to_openwebui: true
+        extra_args:
+          - --language-model-only
+
+      - service_name: qwen36-35b-gpu23
+        model: qwen3.6-35b-a3b
+        served_model_name: qwen3.6-35b-a3b-gpu23
+        protocol_mode: chat
+        placement:
+          strategy: exact
+          gpu_indices: [2, 3]
+        topology:
+          tensor_parallel_size: 2
+        runtime:
+          max_model_len: 262144
+          gpu_memory_utilization: 0.95
+          max_num_batched_tokens: 8192
+          max_num_seqs: 8
+          enable_prefix_caching: false
+        reasoning:
+          enabled: true
+          parser: qwen3
+          expose_to_openwebui: true
+        extra_args:
+          - --language-model-only
+
+    router:
+      aliases:
+        qwen3.6-35b-a3b-gpu01: qwen36-35b-gpu01
+        qwen3.6-35b-a3b-gpu23: qwen36-35b-gpu23
+
 
   gemma4-26b-workstation:
     description: "Efficient default for agentic coding and general chat on a 4x96GB server."

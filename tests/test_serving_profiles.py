@@ -388,6 +388,35 @@ def test_pythia_qwen3_6_mixed_profile_renders_compose_and_litellm(tmp_path: Path
     assert by_alias["eleutherai/pythia-2.8b-v0"] == "text-completion-openai/eleutherai/pythia-2.8b-v0"
 
 
+def test_qwen3_6_dual_tp2_4x96_profile_resolves_and_renders(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "qwen3.6-35b-a3b-dual-tp2-4x96", inventory="4x96")
+    services = {s["service_name"]: s for s in deployment["services"]}
+    assert set(services) == {"qwen36-35b-gpu01", "qwen36-35b-gpu23"}
+
+    gpu01 = services["qwen36-35b-gpu01"]
+    gpu23 = services["qwen36-35b-gpu23"]
+    assert gpu01["gpu_indices"] == [0, 1]
+    assert gpu23["gpu_indices"] == [2, 3]
+    assert gpu01["tensor_parallel_size"] == 2 and gpu23["tensor_parallel_size"] == 2
+    assert gpu01["protocol_mode"] == "chat" and gpu23["protocol_mode"] == "chat"
+    assert gpu01["reasoning_enabled"] is True and gpu01["reasoning_parser"] == "qwen3"
+
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+    assert "vllm-qwen36-35b-gpu01" in blocks
+    assert "vllm-qwen36-35b-gpu23" in blocks
+    for name in ("vllm-qwen36-35b-gpu01", "vllm-qwen36-35b-gpu23"):
+        assert "--enable-reasoning" in blocks[name]
+        assert '"qwen3"' in blocks[name]
+        assert "--language-model-only" in blocks[name]
+
+    cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+    by_alias = {m["model_name"]: m["litellm_params"]["model"] for m in cfg_doc["model_list"]}
+    assert by_alias["qwen3.6-35b-a3b-gpu01"].startswith("openai/")
+    assert by_alias["qwen3.6-35b-a3b-gpu23"].startswith("openai/")
+
+
 def test_kubeai_protocol_validation_applies(tmp_path: Path) -> None:
     from vllm_service.config import initial_config
 
