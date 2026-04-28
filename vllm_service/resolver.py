@@ -92,6 +92,11 @@ def _resolve_service(
     reasoning_parser = reasoning.get("parser") if reasoning_enabled else None
     reasoning_expose_to_openwebui = bool(reasoning.get("expose_to_openwebui", reasoning_enabled))
 
+    chat_compat = deepcopy(model.get("chat_compat", {}) or {})
+    chat_compat.update(deepcopy(service.get("chat_compat", {}) or {}))
+    chat_compat_enabled = bool(chat_compat.get("enabled", False))
+    chat_compat_strategy = str(chat_compat.get("strategy", "flat_messages")) if chat_compat_enabled else None
+
     return {
         "service_name": service["service_name"],
         "profile_name": service["profile_name"],
@@ -137,6 +142,8 @@ def _resolve_service(
         "reasoning_enabled": reasoning_enabled,
         "reasoning_parser": reasoning_parser,
         "reasoning_expose_to_openwebui": reasoning_expose_to_openwebui,
+        "chat_compat_enabled": chat_compat_enabled,
+        "chat_compat_strategy": chat_compat_strategy,
         "benchmark_transport": benchmark_transport,
     }
 

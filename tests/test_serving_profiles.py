@@ -428,6 +428,100 @@ def test_mixed_profile_compose_service_names_are_stable(tmp_path: Path) -> None:
     assert vllm_services == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
 
 
+def test_default_pythia_profiles_have_no_chat_compat(tmp_path: Path) -> None:
+    for profile_name in ("helm-pythia-6.9b", "helm-pythia-2.8b-v0", "helm-pythia-1b-v0"):
+        deployment = _deployment(tmp_path, profile_name, inventory="1x96")
+        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+        for entry in cfg_doc["model_list"]:
+            params = entry["litellm_params"]
+            assert "roles" not in params, profile_name
+            assert "initial_prompt_value" not in params, profile_name
+            assert "final_prompt_value" not in params, profile_name
+        # Resolved service has the flag off.
+        for svc in deployment["services"]:
+            assert svc["chat_compat_enabled"] is False, profile_name
+
+
+def test_pythia_inspect_mmlu_compat_renders_completions_with_litellm_template(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "pythia-inspect-mmlu-compat", inventory="2x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+
+    # Both Pythia services keep protocol_mode=completions.
+    for svc in deployment["services"]:
+        assert svc["protocol_mode"] == "completions", svc["service_name"]
+        assert svc["chat_compat_enabled"] is True, svc["service_name"]
+        assert svc["chat_compat_strategy"] == "flat_messages", svc["service_name"]
+
+    cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+    by_alias = {m["model_name"]: m["litellm_params"] for m in cfg_doc["model_list"]}
+
+    for alias, served in (
+        ("eleutherai/pythia-6.9b", "eleutherai/pythia-6.9b"),
+        ("eleutherai/pythia-2.8b-v0", "eleutherai/pythia-2.8b-v0"),
+    ):
+        params = by_alias[alias]
+        # Still a text-completion upstream — chat_compat does not change that.
+        assert params["model"] == f"text-completion-openai/{served}"
+        # Flat-messages prompt template fields are present and use newline-only post_message.
+        assert params["initial_prompt_value"] == ""
+        assert params["final_prompt_value"] == ""
+        assert set(params["roles"]) == {"system", "user", "assistant"}
+        for role, role_cfg in params["roles"].items():
+            assert role_cfg["pre_message"] == "", (alias, role)
+            assert role_cfg["post_message"] == "\n", (alias, role)
+        # No reasoning passthrough on completions entries.
+        assert "merge_reasoning_content_in_choices" not in params
+
+
+def test_pythia_inspect_mmlu_compat_does_not_render_chat_template_flags_in_compose(
+    tmp_path: Path,
+) -> None:
+    deployment = _deployment(tmp_path, "pythia-inspect-mmlu-compat", inventory="2x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    assert "--chat-template" not in compose_text
+    assert "--chat-template-content-format" not in compose_text
+
+
+def test_no_compose_service_renders_chat_template_flags(tmp_path: Path) -> None:
+    """chat_compat is LiteLLM-only; Compose must never render --chat-template."""
+    for profile_name, inventory in (
+        ("pythia-inspect-mmlu-compat", "2x96"),
+        ("pythia-qwen3.6-mixed-4x96", "4x96"),
+        ("qwen3.6-35b-a3b-dual-tp2-4x96", "4x96"),
+        ("helm-pythia-6.9b", "1x96"),
+        ("qwen2-5-7b-instruct-turbo-default", "1x96"),
+    ):
+        deployment = _deployment(tmp_path, profile_name, inventory=inventory)
+        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+        assert "--chat-template" not in compose_text, profile_name
+
+
+def test_qwen_chat_profiles_are_unaffected_by_chat_compat(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "qwen2-5-7b-instruct-turbo-default", inventory="1x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+    for entry in cfg_doc["model_list"]:
+        params = entry["litellm_params"]
+        assert params["model"].startswith("openai/")
+        assert "roles" not in params
+        assert "initial_prompt_value" not in params
+        assert "final_prompt_value" not in params
+    assert deployment["services"][0]["chat_compat_enabled"] is False
+
+
+def test_litellm_config_for_chat_compat_profile_is_valid_yaml(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path, "pythia-inspect-mmlu-compat", inventory="2x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
+    cfg_doc = yaml.safe_load(text)
+    assert isinstance(cfg_doc, dict)
+    assert "model_list" in cfg_doc
+    assert all("litellm_params" in m for m in cfg_doc["model_list"])
+
+
 def test_no_profile_renders_unsupported_enable_reasoning_flag(tmp_path: Path) -> None:
     """Regression: vLLM CLI rejects --enable-reasoning."""
     for profile_name, inventory in (

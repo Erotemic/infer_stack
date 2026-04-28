@@ -175,6 +175,41 @@ Practical guidance:
   HELM/eval clients should call `/v1/completions` directly for exact
   prompt control rather than going through the chat frontend.
 
+### Chat-shaped clients on top of completions models
+
+Some clients (e.g. InspectAI / Inspect Evals stock MMLU tasks) only
+speak `/v1/chat/completions` and cannot be reconfigured. For those
+cases, profiles can opt into a LiteLLM-only adapter:
+
+```yaml
+chat_compat:
+  enabled: true
+  strategy: flat_messages
+```
+
+When set on a `protocol_mode: completions` service, the rendered
+LiteLLM config keeps the `text-completion-openai/<served>` upstream
+and adds LiteLLM's documented prompt-template fields
+(`initial_prompt_value` / `roles` / `final_prompt_value`) so chat
+messages get flattened into a plain prompt — no role labels, messages
+joined by `\n` — before being forwarded to vLLM `/v1/completions`.
+
+This is **not** a chat tune; the model is still a base model and
+prompt formatting still matters for evaluation. Use it only when a
+chat-shaped client cannot be changed. The vLLM container is not
+restarted, no `--chat-template` is rendered, and the adapter takes
+effect after a `litellm`-only restart:
+
+```bash
+python manage.py render
+docker compose -f generated/docker-compose.yml --env-file generated/.env \
+  up -d --no-deps --force-recreate litellm
+```
+
+The built-in `pythia-inspect-mmlu-compat` profile is a ready-made
+example; see
+[`recipies/compose_pythia_inspect_mmlu_compat.md`](recipies/compose_pythia_inspect_mmlu_compat.md).
+
 ### Reasoning / thinking models
 
 Models can declare reasoning support in the catalog:

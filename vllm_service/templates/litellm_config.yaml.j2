@@ -16,4 +16,21 @@ model_list:
 {% if svc.protocol_mode != "completions" %}
       merge_reasoning_content_in_choices: true
 {% endif %}
+{% if svc.chat_compat_enabled and svc.chat_compat_strategy == "flat_messages" %}
+      # chat_compat: flat_messages
+      # Flatten chat-shaped requests into a plain prompt for completions-only
+      # upstreams. No role labels; messages are concatenated with newlines.
+      initial_prompt_value: ""
+      roles:
+        system:
+          pre_message: ""
+          post_message: "\n"
+        user:
+          pre_message: ""
+          post_message: "\n"
+        assistant:
+          pre_message: ""
+          post_message: "\n"
+      final_prompt_value: ""
+{% endif %}
 {% endfor %}

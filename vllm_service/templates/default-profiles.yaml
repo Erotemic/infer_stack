@@ -919,6 +919,52 @@ profiles:
       aliases:
         eleutherai/pythia-1b-v0: helm-main
 
+  pythia-inspect-mmlu-compat:
+    description: "Pythia 6.9B and 2.8B as completions models with a LiteLLM-only chat compatibility adapter for chat-shaped clients (e.g. InspectAI MMLU). vLLM still serves /v1/completions; LiteLLM flattens chat messages into a plain prompt."
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: pythia-69b
+        model: pythia-6.9b
+        protocol_mode: completions
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+        runtime:
+          max_model_len: 2048
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 2048
+          max_num_seqs: 16
+          enable_prefix_caching: false
+        # LiteLLM-only adapter: flatten chat-shaped requests into a plain
+        # prompt before forwarding to vLLM /v1/completions. Pythia is still
+        # a base/completions model — this does not make it chat-tuned.
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
+
+      - service_name: pythia-28b
+        model: pythia-2.8b-v0
+        protocol_mode: completions
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+        runtime:
+          max_model_len: 2048
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 2048
+          max_num_seqs: 16
+          enable_prefix_caching: false
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
+
+    router:
+      aliases:
+        eleutherai/pythia-6.9b: pythia-69b
+        eleutherai/pythia-2.8b-v0: pythia-28b
+
   helm-vicuna-7b-v1.3:
     description: "HELM: lmsys/vicuna-7b-v1.3"
     vllm:
