@@ -113,6 +113,12 @@ profiles:
           max_num_batched_tokens: 2048
           max_num_seqs: 16
           enable_prefix_caching: false
+        # LiteLLM-only adapter: flatten chat-shaped requests into a plain
+        # prompt for chat-only clients (e.g. InspectAI MMLU). vLLM still
+        # serves /v1/completions; no vLLM --chat-template is rendered.
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
 
       - service_name: pythia-28b
         model: pythia-2.8b-v0
@@ -126,6 +132,9 @@ profiles:
           max_num_batched_tokens: 2048
           max_num_seqs: 16
           enable_prefix_caching: false
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
 
     router:
       aliases:

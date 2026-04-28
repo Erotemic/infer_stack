@@ -499,6 +499,46 @@ def test_no_compose_service_renders_chat_template_flags(tmp_path: Path) -> None:
         assert "--chat-template" not in compose_text, profile_name
 
 
+def test_mixed_profile_pythia_services_get_chat_compat_qwen_does_not(tmp_path: Path) -> None:
+    """In `pythia-qwen3.6-mixed-4x96`, only the two Pythia LiteLLM entries
+    should carry the flat-messages prompt-template fields. The Qwen chat
+    entry must remain a plain `openai/...` route with no `roles` block."""
+    deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+
+    services = {s["service_name"]: s for s in deployment["services"]}
+    assert services["pythia-69b"]["chat_compat_enabled"] is True
+    assert services["pythia-69b"]["chat_compat_strategy"] == "flat_messages"
+    assert services["pythia-28b"]["chat_compat_enabled"] is True
+    assert services["pythia-28b"]["chat_compat_strategy"] == "flat_messages"
+    assert services["qwen36-35b"]["chat_compat_enabled"] is False
+    # vLLM commands are unchanged: no --chat-template anywhere.
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    assert "--chat-template" not in compose_text
+
+    cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
+    by_alias = {m["model_name"]: m["litellm_params"] for m in cfg_doc["model_list"]}
+
+    for alias, served in (
+        ("eleutherai/pythia-6.9b", "eleutherai/pythia-6.9b"),
+        ("eleutherai/pythia-2.8b-v0", "eleutherai/pythia-2.8b-v0"),
+    ):
+        params = by_alias[alias]
+        assert params["model"] == f"text-completion-openai/{served}"
+        assert params["initial_prompt_value"] == ""
+        assert params["final_prompt_value"] == ""
+        assert set(params["roles"]) == {"system", "user", "assistant"}
+        for role_cfg in params["roles"].values():
+            assert role_cfg["pre_message"] == ""
+            assert role_cfg["post_message"] == "\n"
+
+    qwen_params = by_alias["qwen3.6-35b-a3b"]
+    assert qwen_params["model"] == "openai/qwen3.6-35b-a3b"
+    assert "roles" not in qwen_params
+    assert "initial_prompt_value" not in qwen_params
+    assert "final_prompt_value" not in qwen_params
+
+
 def test_qwen_chat_profiles_are_unaffected_by_chat_compat(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "qwen2-5-7b-instruct-turbo-default", inventory="1x96")
     render_compose_artifacts(tmp_path, {"deployment": deployment})

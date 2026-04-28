@@ -36,6 +36,44 @@ python manage.py switch pythia-qwen3.6-mixed-4x96 --apply
 recreates `litellm` + `open-webui` in place so the new alias list takes
 effect. Postgres volumes are not touched.
 
+### LiteLLM-only chat compatibility for the Pythia services
+
+The two Pythia services in this profile carry
+`chat_compat: { enabled: true, strategy: flat_messages }`. That makes
+LiteLLM advertise `eleutherai/pythia-6.9b` and `eleutherai/pythia-2.8b-v0`
+as chat-capable to clients that only speak `/v1/chat/completions`
+(notably InspectAI / Inspect Evals stock MMLU tasks). LiteLLM flattens
+the chat messages into a plain prompt — concatenated `content` joined
+by `\n`, no role labels — and forwards a `/v1/completions` call to vLLM.
+
+This is **LiteLLM-only**:
+
+- vLLM is not restarted, no `--chat-template` is rendered.
+- No second/duplicate Pythia container.
+- Pythia stays `protocol_mode: completions`; HELM-style direct
+  `/v1/completions` clients still get exact-prompt control.
+- The Qwen3.6 entry is unchanged — it remains a normal chat route.
+
+To roll out a LiteLLM config change (e.g. after editing chat-compat
+fields) without disturbing any of the running vLLM containers:
+
+```bash
+python manage.py render
+
+docker compose -f generated/docker-compose.yml --env-file generated/.env \
+  up -d --no-deps --force-recreate litellm
+```
+
+`--no-deps` keeps `vllm-qwen36-35b`, `vllm-pythia-69b`, and
+`vllm-pythia-28b` running. Confirm with:
+
+```bash
+docker compose -f generated/docker-compose.yml --env-file generated/.env ps
+```
+
+Avoid `docker compose down`, `down -v`, or a profile-wide
+`up --force-recreate`.
+
 ### Restarting only the Qwen container
 
 If you change Qwen settings (for example, the tool-call parser) and
