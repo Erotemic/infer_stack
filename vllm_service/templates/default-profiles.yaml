@@ -198,6 +198,112 @@ profiles:
         qwen3.6-35b-a3b-gpu23: qwen36-35b-gpu23
 
 
+  pythia-qwen25-gptoss-mixed-4x96:
+    # Co-residency profile that brings up four audit-target models on a
+    # single 4x96GB host. Layout:
+    #   GPU 0  gpt-oss-20b              (~40 GiB, chat-protocol)
+    #   GPU 1  qwen2.5-7b-instruct       (~16 GiB, chat-protocol)
+    #   GPU 2  pythia-6.9b               (~16 GiB, completions-protocol)
+    #   GPU 3  pythia-2.8b-v0            (~ 8 GiB, completions-protocol)
+    #
+    # The pythia services match the GPU pinning of
+    # ``pythia-qwen3.6-mixed-4x96`` (the existing recipe used by another
+    # ongoing experiment) so a host already running those two pythia
+    # containers can be switched to this profile without disrupting the
+    # pythia processes — only the qwen3.6-35b service rotates out and
+    # the qwen2.5-7b + gpt-oss-20b services rotate in.
+    #
+    # Audience: the eval_audit ``finish_qwen25_gptoss`` preset uses this
+    # profile to run the missing public-HELM benchmarks identified in
+    # the Case Study 3 gap analysis (Qwen 2.5 7B on math + natural_qa +
+    # the recipe-drifted reruns; gpt-oss 20B on the v1.12.0 / v1.14.0
+    # capabilities and safety benchmarks).
+    description: "Serve gpt-oss-20b + Qwen 2.5 7B Instruct + Pythia 6.9B + Pythia 2.8B on a 4x96GB host for the finish_qwen25_gptoss audit batch."
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: gpt-oss-20b
+        model: gpt-oss-20b
+        protocol_mode: chat
+        placement:
+          strategy: exact
+          gpu_indices: [0]
+        runtime:
+          # gpt-oss-20b on a single 96GB GPU. 32k context matches the
+          # default-models entry; the safety benchmarks
+          # (xstest, harm_bench) all stay well under that budget.
+          max_model_len: 32768
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 8192
+          max_num_seqs: 16
+          enable_prefix_caching: true
+
+      - service_name: qwen25-7b
+        model: qwen2.5-7b-instruct
+        protocol_mode: chat
+        placement:
+          strategy: exact
+          gpu_indices: [1]
+        runtime:
+          # Match the qwen2-5-7b-instruct-turbo-default audit profile's
+          # implicit defaults; 32k context is plenty for the missing
+          # math + natural_qa benchmarks the audit needs.
+          max_model_len: 32768
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 8192
+          max_num_seqs: 16
+          enable_prefix_caching: true
+
+      - service_name: pythia-69b
+        model: pythia-6.9b
+        protocol_mode: completions
+        placement:
+          strategy: exact
+          gpu_indices: [2]
+        runtime:
+          max_model_len: 2048
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 2048
+          max_num_seqs: 16
+          enable_prefix_caching: false
+        # Same chat_compat shim the pythia-qwen3.6-mixed-4x96 profile
+        # uses so InspectAI / Inspect Evals MMLU stays unblocked while
+        # this profile is active.
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
+
+      - service_name: pythia-28b
+        model: pythia-2.8b-v0
+        protocol_mode: completions
+        placement:
+          strategy: exact
+          gpu_indices: [3]
+        runtime:
+          max_model_len: 2048
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 2048
+          max_num_seqs: 16
+          enable_prefix_caching: false
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
+
+    router:
+      aliases:
+        # Public-facing aliases used by the eval-audit run_entries
+        # (see the finish_qwen25_gptoss preset). The aliases exactly
+        # match the model_deployment names HELM expects so that
+        # run_specs from public HELM can be reused with only the
+        # ``model_deployment=...`` qualifier swapped to the local
+        # litellm route.
+        openai/gpt-oss-20b: gpt-oss-20b
+        qwen/qwen2.5-7b-instruct-turbo: qwen25-7b
+        eleutherai/pythia-6.9b: pythia-69b
+        eleutherai/pythia-2.8b-v0: pythia-28b
+
+
   gemma4-26b-workstation:
     description: "Efficient default for agentic coding and general chat on a 4x96GB server."
     vllm:
