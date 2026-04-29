@@ -36,6 +36,7 @@ services:
     image: {{ lock.deployment.images.vllm }}
     container_name: vllm-{{ svc.service_name }}
     restart: unless-stopped
+    ipc: host
     labels:
       vllm_service.profile_name: "{{ svc.profile_name }}"
       vllm_service.public_name: "{{ svc.profile_public_name }}"
@@ -45,6 +46,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       HF_TOKEN: ${HF_TOKEN}
       VLLM_API_KEY: ${VLLM_BACKEND_API_KEY}
+      VLLM_CACHE_ROOT: /root/.cache/vllm
 {% if lock.deployment.vllm.enable_responses_api_store %}
       VLLM_ENABLE_RESPONSES_API_STORE: "1"
 {% endif %}
@@ -88,6 +90,7 @@ services:
 {% endfor %}
     volumes:
       - {{ lock.deployment.state.hf_cache }}:/root/.cache/huggingface
+      - {{ lock.deployment.state.vllm_cache }}:/root/.cache/vllm
     ports:
       - "127.0.0.1:{{ 18000 + loop.index0 }}:8000"
     healthcheck:

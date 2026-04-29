@@ -46,6 +46,7 @@ def default_state_paths() -> dict[str, str]:
     storage_root = _default_storage_root()
     return {
         "hf_cache": str(storage_root / "hf-cache"),
+        "vllm_cache": str(storage_root / "vllm-cache"),
         "open_webui": str(storage_root / "open-webui"),
         "postgres_open_webui": str(storage_root / "postgres-open-webui"),
         "postgres_litellm": str(storage_root / "postgres-litellm"),

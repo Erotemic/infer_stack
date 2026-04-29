@@ -19,6 +19,7 @@ def _cfg(tmp_path: Path, *, backend: str = "compose") -> dict:
     cfg["backend"] = backend
     cfg["state"] = {
         "hf_cache": "state/hf-cache",
+        "vllm_cache": "state/vllm-cache",
         "open_webui": "state/open-webui",
         "postgres": "state/postgres",
         "runtime": "state/runtime",
@@ -239,6 +240,7 @@ def test_validation_rejects_chat_protocol_for_completions_only_model(tmp_path: P
     cfg["backend"] = "compose"
     cfg["state"] = {
         "hf_cache": "state/hf-cache",
+        "vllm_cache": "state/vllm-cache",
         "open_webui": "state/open-webui",
         "postgres_open_webui": "state/postgres-open-webui",
         "postgres_litellm": "state/postgres-litellm",
@@ -702,3 +704,52 @@ def test_load_profile_contract_uses_public_loader_for_gpt_oss_variants(tmp_path:
     )
     assert completions["services"][0]["protocol"]["mode"] == "completions"
     assert chat["services"][0]["protocol"]["mode"] == "chat"
+
+
+def test_compose_vllm_service_persists_caches_and_uses_host_ipc(tmp_path: Path) -> None:
+    """Warm-restart caches and shared memory must be wired into every vLLM service.
+
+    - Hugging Face cache mount (existing behaviour) avoids re-downloading weights.
+    - vLLM cache mount + ``VLLM_CACHE_ROOT`` env let torch.compile artifacts
+      survive container restarts.
+    - ``ipc: host`` is required by vLLM's Docker guidance to give the engine
+      adequate shared memory for tensor-parallel and worker IPC.
+    """
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+    vllm_blocks = {name: body for name, body in blocks.items() if name.startswith("vllm-")}
+    assert vllm_blocks, "expected at least one rendered vLLM service"
+
+    expected_hf_mount = f"{tmp_path}/state/hf-cache:/root/.cache/huggingface"
+    expected_vllm_mount = f"{tmp_path}/state/vllm-cache:/root/.cache/vllm"
+    for name, body in vllm_blocks.items():
+        assert "VLLM_CACHE_ROOT: /root/.cache/vllm" in body, name
+        assert expected_hf_mount in body, name
+        assert expected_vllm_mount in body, name
+        assert "ipc: host" in body, name
+
+
+def test_compose_non_vllm_services_do_not_get_vllm_cache_mount(tmp_path: Path) -> None:
+    """The vLLM cache mount and host IPC must not leak into Postgres / litellm / open-webui."""
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+    for name in ("postgres-open-webui", "postgres-litellm", "litellm", "open-webui"):
+        body = blocks[name]
+        assert "/root/.cache/vllm" not in body, name
+        assert "VLLM_CACHE_ROOT" not in body, name
+        assert "ipc: host" not in body, name
+
+
+def test_default_state_paths_include_vllm_cache() -> None:
+    from vllm_service.config import default_state_paths, normalized_state
+
+    paths = default_state_paths()
+    assert "vllm_cache" in paths
+    assert paths["vllm_cache"].endswith("/vllm-cache")
+
+    normalized = normalized_state(Path("/tmp/example-root"), {"vllm_cache": "custom/vllm"})
+    assert normalized["vllm_cache"] == "/tmp/example-root/custom/vllm"
