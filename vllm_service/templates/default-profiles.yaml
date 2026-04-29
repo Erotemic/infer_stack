@@ -201,7 +201,7 @@ profiles:
   pythia-qwen25-gptoss-mixed-4x96:
     # Co-residency profile that brings up four audit-target models on a
     # single 4x96GB host. Layout:
-    #   GPU 0  gpt-oss-20b              (~40 GiB, chat-protocol)
+    #   GPU 0  gpt-oss-20b              (~40 GiB, completions-protocol with chat_compat)
     #   GPU 1  qwen2.5-7b-instruct       (~16 GiB, chat-protocol)
     #   GPU 2  pythia-6.9b               (~16 GiB, completions-protocol)
     #   GPU 3  pythia-2.8b-v0            (~ 8 GiB, completions-protocol)
@@ -225,7 +225,18 @@ profiles:
     services:
       - service_name: gpt-oss-20b
         model: gpt-oss-20b
-        protocol_mode: chat
+        # Match the existing ``gpt-oss-20b-completions`` audit profile
+        # that the standalone ``gpt_oss_20b_vllm`` preset uses. HELM's
+        # OpenAI-compatible client wires ``model_deployment=
+        # litellm/gpt-oss-20b-local`` to /v1/completions; the gpt-oss
+        # Harmony chat format puts reasoning tokens in
+        # ``message.reasoning_content`` and leaves ``message.content``
+        # as None for some prompts, which crashes HELM scorers like
+        # ifeval that read ``completions[0].text``. Serving completions
+        # avoids the chat split entirely, and the chat_compat shim
+        # below preserves chat-shaped client compatibility through
+        # LiteLLM's flat-message translation.
+        protocol_mode: completions
         placement:
           strategy: exact
           gpu_indices: [0]
@@ -238,6 +249,9 @@ profiles:
           max_num_batched_tokens: 8192
           max_num_seqs: 16
           enable_prefix_caching: true
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
 
       - service_name: qwen25-7b
         model: qwen2.5-7b-instruct
