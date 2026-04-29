@@ -194,6 +194,12 @@ class ValidateCLI(scfg.DataConfig):
 class RenderCLI(scfg.DataConfig):
     profile = scfg.Value(None, type=str)
     allow_unsupported = scfg.Value(False, isflag=True)
+    yes = scfg.Value(
+        False,
+        isflag=True,
+        short_alias=["y"],
+        help="Apply rendered changes without prompting. Without this, render shows a per-file diff and asks for confirmation.",
+    )
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -209,7 +215,7 @@ class RenderCLI(scfg.DataConfig):
         )
         ensure_renderable(plan)
         save_plan(plan)
-        render_from_lock(root_dir(), plan)
+        render_from_lock(root_dir(), plan, assume_yes=bool(config.yes))
         print(f"Wrote {plan_path()}")
         print(f"Rendered Compose into {generated_dir()}")
         print(f"Rendered mounted runtime files into {runtime_dir_for_config(cfg)}")
@@ -219,6 +225,7 @@ class RenderCLI(scfg.DataConfig):
 class UpCLI(scfg.DataConfig):
     allow_unsupported = scfg.Value(False, isflag=True)
     detach = scfg.Value(False, isflag=True, short_alias=['d'])
+    yes = scfg.Value(False, isflag=True, short_alias=["y"], help="If `up` triggers a re-render, apply changes without prompting.")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -229,6 +236,7 @@ class UpCLI(scfg.DataConfig):
                 argv=False,
                 profile=None,
                 allow_unsupported=config.allow_unsupported,
+                yes=config.yes,
             )
         compose_up(
             cfg["runtime"]["compose_cmd"],
@@ -257,6 +265,7 @@ class SwitchCLI(scfg.DataConfig):
     profile = scfg.Value(None, type=str, position=1)
     apply = scfg.Value(False, isflag=True)
     allow_unsupported = scfg.Value(False, isflag=True)
+    yes = scfg.Value(False, isflag=True, short_alias=["y"], help="Apply rendered changes without prompting.")
 
     @classmethod
     def main(cls, argv=1, **kwargs):
@@ -274,7 +283,7 @@ class SwitchCLI(scfg.DataConfig):
         )
         ensure_renderable(plan)
         save_plan(plan)
-        render_from_lock(root_dir(), plan)
+        render_from_lock(root_dir(), plan, assume_yes=bool(config.yes))
         if config.apply:
             compose_down(
                 cfg["runtime"]["compose_cmd"],

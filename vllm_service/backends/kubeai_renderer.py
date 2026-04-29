@@ -5,6 +5,7 @@ from typing import Any
 
 import yaml
 
+from ..diff_prompt import confirm_writes
 from ..profile_runtime import vllm_args
 
 
@@ -59,7 +60,13 @@ def _model_doc(service: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
-def render_kubeai_artifacts(root: Path, lock_data: dict) -> None:
+def render_kubeai_artifacts(root: Path, lock_data: dict, *, assume_yes: bool = True) -> None:
+    """Render the KubeAI backend artifacts.
+
+    When ``assume_yes`` is False, all rendered YAML files are diffed against
+    their on-disk versions and the user is prompted via Rich before any file
+    is written.
+    """
     deployment = lock_data.get("deployment", {})
     cluster = deployment.get("cluster", {})
     namespace = cluster.get("namespace", "kubeai")
@@ -71,17 +78,17 @@ def render_kubeai_artifacts(root: Path, lock_data: dict) -> None:
         "kind": "Namespace",
         "metadata": {"name": namespace},
     }
-    (generated / "namespace.yaml").write_text(yaml.safe_dump(namespace_doc, sort_keys=False), encoding="utf-8")
+    namespace_text = yaml.safe_dump(namespace_doc, sort_keys=False)
 
     values_doc = _resource_profile_values(lock_data)
-    (generated / "kubeai-values.yaml").write_text(yaml.safe_dump(values_doc, sort_keys=False), encoding="utf-8")
+    values_text = yaml.safe_dump(values_doc, sort_keys=False)
 
     model_docs = [_model_doc(service) for service in deployment.get("services", [])]
     model_text = "---\n".join(yaml.safe_dump(doc, sort_keys=False) for doc in model_docs)
-    (generated / "models.yaml").write_text(model_text, encoding="utf-8")
 
     ingress = cluster.get("ingress", {}) or {}
     ingress_path = generated / "ingress.yaml"
+    ingress_text: str | None = None
     if ingress.get("enabled"):
         path_prefix = ingress.get("path_prefix", "/") or "/"
         ingress_doc: dict[str, Any] = {
@@ -117,9 +124,7 @@ def render_kubeai_artifacts(root: Path, lock_data: dict) -> None:
             ingress_doc["spec"]["rules"][0]["host"] = ingress["host"]
         if ingress.get("tls_secret_name") and ingress.get("host"):
             ingress_doc["spec"]["tls"] = [{"hosts": [ingress["host"]], "secretName": ingress["tls_secret_name"]}]
-        ingress_path.write_text(yaml.safe_dump(ingress_doc, sort_keys=False), encoding="utf-8")
-    elif ingress_path.exists():
-        ingress_path.unlink()
+        ingress_text = yaml.safe_dump(ingress_doc, sort_keys=False)
 
     readme = f"""# Generated KubeAI artifacts
 
@@ -146,4 +151,29 @@ helm upgrade --install {cluster.get('kubeai_release_name', 'kubeai')} {cluster.g
 kubectl apply -f generated/kubeai/models.yaml
 ```
 """
-    (generated / "README.md").write_text(readme, encoding="utf-8")
+
+    namespace_path = generated / "namespace.yaml"
+    values_path = generated / "kubeai-values.yaml"
+    models_path = generated / "models.yaml"
+    readme_path = generated / "README.md"
+
+    planned: dict[Path, str] = {
+        namespace_path: namespace_text,
+        values_path: values_text,
+        models_path: model_text,
+        readme_path: readme,
+    }
+    if ingress_text is not None:
+        planned[ingress_path] = ingress_text
+
+    if not confirm_writes(planned, assume_yes=assume_yes, title="Pending KubeAI render"):
+        raise SystemExit("Aborted by user; no files were written.")
+
+    namespace_path.write_text(namespace_text, encoding="utf-8")
+    values_path.write_text(values_text, encoding="utf-8")
+    models_path.write_text(model_text, encoding="utf-8")
+    readme_path.write_text(readme, encoding="utf-8")
+    if ingress_text is not None:
+        ingress_path.write_text(ingress_text, encoding="utf-8")
+    elif ingress_path.exists():
+        ingress_path.unlink()

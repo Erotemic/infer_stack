@@ -436,7 +436,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     )
     ensure_renderable(plan)
     save_plan(plan)
-    render_from_lock(root_dir(), plan)
+    render_from_lock(root_dir(), plan, assume_yes=bool(getattr(args, "yes", False)))
     print(f"Wrote {plan_path()}")
     if backend_name(cfg) == "kubeai":
         print(f"Rendered KubeAI artifacts into {kubeai_generated_dir()}")
@@ -465,6 +465,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             ingress_enabled=getattr(args, "ingress_enabled", None),
             allow_unsupported=effective_allow_unsupported(args, cfg),
             simulate_hardware=getattr(args, "simulate_hardware", None),
+            yes=bool(getattr(args, "yes", False)),
         )
         cmd_render(render_args)
     compose_file = generated_dir() / "docker-compose.yml"
@@ -523,7 +524,7 @@ def cmd_switch(args: argparse.Namespace) -> int:
     )
     ensure_renderable(plan)
     save_plan(plan)
-    render_from_lock(root_dir(), plan)
+    render_from_lock(root_dir(), plan, assume_yes=bool(getattr(args, "yes", False)))
     if args.apply:
         if backend_name(cfg) == "compose":
             compose_file = generated_dir() / "docker-compose.yml"
@@ -687,6 +688,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             ingress_enabled=getattr(args, "ingress_enabled", None),
             allow_unsupported=effective_allow_unsupported(args, cfg),
             simulate_hardware=getattr(args, "simulate_hardware", None),
+            yes=bool(getattr(args, "yes", False)),
         )
         cmd_render(render_args)
     if backend_name(cfg) == "kubeai":
@@ -887,6 +889,12 @@ def build_parser() -> argparse.ArgumentParser:
         add_override_args(s, include_profile=True, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
         s.add_argument("--allow-unsupported", action="store_true")
         s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
+        if name == "render":
+            s.add_argument(
+                "-y", "--yes",
+                action="store_true",
+                help="Apply rendered changes without prompting. Without this flag, render shows a per-file diff and asks for confirmation.",
+            )
         s.set_defaults(func=func)
 
     s = sub.add_parser("up")
@@ -894,6 +902,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--allow-unsupported", action="store_true")
     s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
     s.add_argument("-d", "--detach", action="store_true", help="Run in background instead of attaching to logs")
+    s.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="If `up` triggers a re-render, apply the rendered changes without prompting.",
+    )
     s.set_defaults(func=cmd_up)
 
     s = sub.add_parser("down")
@@ -906,6 +919,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--apply", action="store_true")
     s.add_argument("--allow-unsupported", action="store_true")
     s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
+    s.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Apply rendered changes without prompting.",
+    )
     s.set_defaults(func=cmd_switch)
 
     s = sub.add_parser("list-models")
@@ -968,6 +986,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-d", "--detach", action="store_true")
     s.add_argument("--allow-unsupported", action="store_true")
     s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
+    s.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="If `deploy` triggers a re-render, apply the rendered changes without prompting.",
+    )
     s.set_defaults(func=cmd_deploy)
 
     s = sub.add_parser("status")
