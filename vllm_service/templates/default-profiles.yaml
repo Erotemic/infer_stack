@@ -318,6 +318,93 @@ profiles:
         eleutherai/pythia-2.8b-v0: pythia-28b
 
 
+  pythia-llama2-70b-mixed-4x96:
+    # Co-residency profile that brings up LLaMA-2-70B (fp16, tp=2) and
+    # the two Pythia services on a single 4x96GB host for the
+    # heatmap-paper Case Study 3 LLaMA-2 reproduction. Layout:
+    #   GPU 0+1 llama-2-70b    (~140 GiB total via tp=2, completions)
+    #   GPU 2   pythia-6.9b    (~16 GiB, completions w/ chat_compat)
+    #   GPU 3   pythia-2.8b-v0 (~ 8 GiB, completions w/ chat_compat)
+    #
+    # Why this layout (vs. modifying ``pythia-qwen25-gptoss-mixed-4x96``):
+    # LLaMA-2-70B at fp16 needs both GPUs 0 and 1 for tp=2, which
+    # evicts the gpt-oss-20b service that lives on GPU 0 in the
+    # qwen25-gptoss profile. Public HELM ran LLaMA-2-70B at fp16, so
+    # using tp=2 (rather than INT4/AWQ on a single GPU) keeps the
+    # local recipe matched to the public recipe — no quantization
+    # confound in the reproducibility comparison. gpt-oss work
+    # continues to use the qwen25-gptoss profile when needed.
+    #
+    # The Pythia GPU pinning matches both ``pythia-qwen3.6-mixed-4x96``
+    # and ``pythia-qwen25-gptoss-mixed-4x96``, so a host already
+    # running those Pythia containers can be switched to this profile
+    # without disrupting in-flight Pythia work — only the GPU 0/1
+    # services rotate.
+    description: "Serve LLaMA-2-70B (fp16, tp=2) + Pythia 6.9B + Pythia 2.8B on a 4x96GB host for the LLaMA-2-70B audit batch."
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: llama2-70b
+        model: llama-2-70b
+        protocol_mode: completions
+        placement:
+          strategy: exact
+          gpu_indices: [0, 1]
+        topology:
+          tensor_parallel_size: 2
+        runtime:
+          # Match the public HELM v0.3.0 LLaMA-2-70B recipe: 4096
+          # context, no chat template (base model). Chat-shaped clients
+          # get the same flat_messages compat shim Pythia uses.
+          max_model_len: 4096
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 4096
+          max_num_seqs: 8
+          enable_prefix_caching: true
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
+
+      - service_name: pythia-69b
+        model: pythia-6.9b
+        protocol_mode: completions
+        placement:
+          strategy: exact
+          gpu_indices: [2]
+        runtime:
+          max_model_len: 2048
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 2048
+          max_num_seqs: 16
+          enable_prefix_caching: false
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
+
+      - service_name: pythia-28b
+        model: pythia-2.8b-v0
+        protocol_mode: completions
+        placement:
+          strategy: exact
+          gpu_indices: [3]
+        runtime:
+          max_model_len: 2048
+          gpu_memory_utilization: 0.9
+          max_num_batched_tokens: 2048
+          max_num_seqs: 16
+          enable_prefix_caching: false
+        chat_compat:
+          enabled: true
+          strategy: flat_messages
+
+    router:
+      aliases:
+        meta/llama-2-70b: llama2-70b
+        eleutherai/pythia-6.9b: pythia-69b
+        eleutherai/pythia-2.8b-v0: pythia-28b
+
+
   gemma4-26b-workstation:
     description: "Efficient default for agentic coding and general chat on a 4x96GB server."
     vllm:
@@ -937,6 +1024,41 @@ profiles:
     router:
       aliases:
         meta/llama-2-7b: helm-main
+
+  helm-llama-2-13b:
+    description: "HELM: meta/llama-2-13b (meta-llama/Llama-2-13b-hf)"
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: helm-main
+        model: llama-2-13b
+        protocol_mode: completions
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+    router:
+      aliases:
+        meta/llama-2-13b: helm-main
+
+  helm-llama-2-70b:
+    description: "HELM: meta/llama-2-70b (meta-llama/Llama-2-70b-hf, tp=2)"
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: helm-main
+        model: llama-2-70b
+        protocol_mode: completions
+        placement:
+          strategy: first_fit
+          gpu_count: 2
+        topology:
+          tp: 2
+          dp: 1
+    router:
+      aliases:
+        meta/llama-2-70b: helm-main
 
   helm-mistral-7b-instruct-v0.3:
     description: "HELM: mistralai/mistral-7b-instruct-v0.3 (mistralai/Mistral-7B-Instruct-v0.3)"

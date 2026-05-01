@@ -325,6 +325,43 @@ models:
       max_num_batched_tokens: 4096
       max_num_seqs: 16
 
+  llama-2-13b:
+    hf_model_id: meta-llama/Llama-2-13b-hf
+    served_model_name: meta/llama-2-13b
+    family: llama2
+    modalities: [text]
+    supported_protocols: [completions]
+    memory_class_gib: 28
+    min_vram_gib_per_replica: 28
+    preferred_gpu_count: 1
+    context_window: 4096
+    defaults:
+      max_model_len: 4096
+      gpu_memory_utilization: 0.9
+      enable_prefix_caching: true
+      max_num_batched_tokens: 4096
+      max_num_seqs: 16
+
+  # LLaMA-2-70B at fp16 needs ~140 GB; the default tp=2 layout fits on
+  # two 96 GB GPUs with headroom for KV cache. Public HELM ran fp16,
+  # so the audit recipe matches that — no quantization in this profile.
+  llama-2-70b:
+    hf_model_id: meta-llama/Llama-2-70b-hf
+    served_model_name: meta/llama-2-70b
+    family: llama2
+    modalities: [text]
+    supported_protocols: [completions]
+    memory_class_gib: 140
+    min_vram_gib_per_replica: 70
+    preferred_gpu_count: 2
+    context_window: 4096
+    defaults:
+      max_model_len: 4096
+      gpu_memory_utilization: 0.9
+      enable_prefix_caching: true
+      max_num_batched_tokens: 4096
+      max_num_seqs: 8
+
   mistral-7b-instruct-v0.3:
     hf_model_id: mistralai/Mistral-7B-Instruct-v0.3
     served_model_name: mistralai/mistral-7b-instruct-v0.3
