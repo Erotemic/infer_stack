@@ -855,6 +855,43 @@ profiles:
       enable_responses_api_store: false
       logging_level: INFO
 
+  gpt-oss-20b-completions-dp4:
+    description: "4-replica data-parallel serving of openai/gpt-oss-20b via completions protocol on a 4×96GB host. One replica per GPU, all sharing a single LiteLLM endpoint."
+    protocol_mode: completions
+    benchmark_transport:
+      kind: openai-compatible
+      deployment_name: litellm/gpt-oss-20b-local
+      request_model_name: openai/gpt-oss-20b
+      api_key_env: LITELLM_MASTER_KEY
+      api_key_placeholder: SET_LITELLM_MASTER_KEY_IN_RUNTIME_BUNDLE
+      base_url: http://localhost:14000/v1
+    audit_notes:
+      - Exported HELM bundles should use a completions-capable client class for this profile.
+      - Supports 4 parallel HELM workers; vLLM dp=4 handles request distribution across GPUs.
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: gpt-oss-20b-completions
+        model: gpt-oss-20b
+        served_model_name: openai/gpt-oss-20b
+        placement:
+          strategy: multi_gpu
+          gpu_indices: [0, 1, 2, 3]
+          prefer_homogeneous_group: true
+        topology:
+          tp: 1
+          dp: 4
+        runtime:
+          max_model_len: 32768
+          gpu_memory_utilization: 0.90
+          max_num_seqs: 16
+          max_num_batched_tokens: 8192
+          enable_prefix_caching: true
+    router:
+      aliases:
+        openai/gpt-oss-20b: gpt-oss-20b-completions
+
   vicuna-7b-v1-3-no-chat-template:
     description: "Audit serving profile for legacy Vicuna prompting without relying on a chat template."
     base_model: vicuna-7b-v1.3
