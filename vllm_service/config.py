@@ -300,6 +300,7 @@ def initial_config() -> dict[str, Any]:
         "images": deepcopy(PINNED_IMAGES),
         "state": default_state_paths(),
         "output": default_output_config(),
+        "open_webui": {"auth": False},
         "cluster": default_cluster_config(),
         "resource_profiles": default_resource_profiles(),
         "profiles": {},

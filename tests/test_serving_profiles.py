@@ -783,6 +783,27 @@ def test_output_generated_dir_redirects_kubeai_render(tmp_path: Path) -> None:
     assert not (tmp_path / "generated").exists()
 
 
+def test_openwebui_auth_defaults_to_disabled_in_compose_render(tmp_path: Path) -> None:
+    """Auth-less Open WebUI is the out-of-the-box experience for compose."""
+    deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
+    assert deployment["open_webui"]["auth"] is False
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+    assert 'WEBUI_AUTH: "False"' in blocks["open-webui"]
+
+
+def test_openwebui_auth_can_be_enabled_via_config(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg["open_webui"] = {"auth": True}
+    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
+    assert deployment["open_webui"]["auth"] is True
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    blocks = _split_compose_blocks(compose_text)
+    assert 'WEBUI_AUTH: "True"' in blocks["open-webui"]
+
+
 def test_normalized_output_anchors_relative_paths_on_root() -> None:
     from vllm_service.config import normalized_output
 

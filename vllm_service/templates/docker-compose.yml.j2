@@ -145,7 +145,7 @@ services:
       litellm:
         condition: service_started
     environment:
-      WEBUI_AUTH: "True"
+      WEBUI_AUTH: "{{ 'True' if lock.deployment.open_webui.auth else 'False' }}"
       ENABLE_PERSISTENT_CONFIG: "False"
       DATABASE_URL: postgresql://${OPENWEBUI_POSTGRES_USER}:${OPENWEBUI_POSTGRES_PASSWORD}@postgres-open-webui:5432/${OPENWEBUI_POSTGRES_DB}
       OPENAI_API_BASE_URL: http://litellm:4000/v1

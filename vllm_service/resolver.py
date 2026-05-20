@@ -259,6 +259,6 @@ def resolve(
         },
         "open_webui": {
             "enabled": backend == "compose",
-            "auth": True,
+            "auth": bool(config.get("open_webui", {}).get("auth", False)),
         },
     }

@@ -130,6 +130,21 @@ python manage.py down
 `down` never removes named volumes. The Postgres data directory and the
 Open WebUI volume are preserved across `down`, `up`, `switch`, and `render`.
 
+### Open WebUI authentication
+
+By default Open WebUI runs with `WEBUI_AUTH=False` — no login screen,
+anyone who can reach the port gets straight into the UI. This is the
+expected behavior for a local dev box. To re-enable login/signup, set
+in `config.yaml`:
+
+```yaml
+open_webui:
+  auth: true
+```
+
+and re-render. Existing accounts stored in the `postgres-open-webui`
+volume are preserved across the toggle.
+
 ### Persistent state and database layout
 
 Compose runs **two** separate Postgres containers:
