@@ -5,6 +5,7 @@ from typing import Any
 
 import yaml
 
+from ..config import GENERATED_DIR_NAME, KUBEAI_GENERATED_SUBDIR, normalized_output
 from ..diff_prompt import confirm_writes
 from ..profile_runtime import vllm_args
 
@@ -70,7 +71,15 @@ def render_kubeai_artifacts(root: Path, lock_data: dict, *, assume_yes: bool = T
     deployment = lock_data.get("deployment", {})
     cluster = deployment.get("cluster", {})
     namespace = cluster.get("namespace", "kubeai")
-    generated = root / "generated" / "kubeai"
+    # See compose_renderer for the rationale on this fallback: hand-built
+    # deployment dicts get the historical ``<root>/generated/kubeai`` layout
+    # so they don't need to know about ``output.generated_dir``.
+    output_cfg = deployment.get("output")
+    if output_cfg:
+        output_root = Path(normalized_output(root, output_cfg)["generated_dir"])
+    else:
+        output_root = root / GENERATED_DIR_NAME
+    generated = output_root / KUBEAI_GENERATED_SUBDIR
     generated.mkdir(parents=True, exist_ok=True)
 
     namespace_doc = {
@@ -141,14 +150,14 @@ Files:
 Typical flow:
 
 ```bash
-kubectl apply -f generated/kubeai/namespace.yaml
+kubectl apply -f {generated}/namespace.yaml
 helm repo add kubeai https://www.kubeai.org --force-update
 helm repo update
 helm upgrade --install {cluster.get('kubeai_release_name', 'kubeai')} {cluster.get('kubeai_chart', 'kubeai/kubeai')} \
   -n {namespace} --create-namespace \
-  -f generated/kubeai/kubeai-values.yaml \
+  -f {generated}/kubeai-values.yaml \
   --wait
-kubectl apply -f generated/kubeai/models.yaml
+kubectl apply -f {generated}/models.yaml
 ```
 """
 

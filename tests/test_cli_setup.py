@@ -18,6 +18,9 @@ MANAGE_PY = Path(__file__).resolve().parents[1] / "manage.py"
 
 def run_cli(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     full_env = os.environ.copy()
+    # Anchor rendered artifacts under tmp_path so tests on machines whose
+    # /data/service/docker tree exists don't pick up the shared default.
+    full_env.setdefault("VLLM_SERVICE_GENERATED_DIR", str(tmp_path / "generated"))
     if env:
         full_env.update(env)
     return subprocess.run(

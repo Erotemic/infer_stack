@@ -9,12 +9,12 @@ from typing import Any
 from .benchmark import run_benchmark
 from .config import (
     CONFIG_FILE,
-    GENERATED_DIR,
     MODELS_FILE,
-    PLAN_FILE,
+    generated_dir_for_config,
     initial_config,
     normalized_state,
     load_yaml,
+    plan_path_for_config,
     save_yaml,
 )
 from .docker_utils import compose_down, compose_up
@@ -36,12 +36,21 @@ def models_path() -> Path:
     return root_dir() / MODELS_FILE
 
 
-def generated_dir() -> Path:
-    return root_dir() / GENERATED_DIR
+def _safe_cfg() -> dict[str, Any]:
+    path = config_path()
+    if path.exists():
+        return load_yaml(path)
+    return initial_config()
 
 
-def plan_path() -> Path:
-    return root_dir() / PLAN_FILE
+def generated_dir(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg if cfg is not None else _safe_cfg()
+    return generated_dir_for_config(root_dir(), cfg)
+
+
+def plan_path(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg if cfg is not None else _safe_cfg()
+    return plan_path_for_config(root_dir(), cfg)
 
 
 def load_config() -> dict[str, Any]:
@@ -57,7 +66,7 @@ def runtime_dir_for_config(cfg: dict) -> Path:
 
 
 def runtime_env_path(cfg: dict) -> Path:
-    return generated_dir() / ".env"
+    return generated_dir(cfg) / ".env"
 
 
 def runtime_litellm_config_path(cfg: dict) -> Path:
@@ -86,8 +95,8 @@ def build_plan(
     }
 
 
-def save_plan(plan):
-    path = plan_path()
+def save_plan(plan, cfg=None):
+    path = plan_path(cfg)
     save_yaml(path, plan)
     return path
 
@@ -104,8 +113,8 @@ def ensure_renderable(plan):
 def render_is_stale(cfg=None):
     cfg = load_config() if cfg is None else cfg
     cfg_path = config_path()
-    current_plan = plan_path()
-    compose_file = generated_dir() / "docker-compose.yml"
+    current_plan = plan_path(cfg)
+    compose_file = generated_dir(cfg) / "docker-compose.yml"
     runtime_env = runtime_env_path(cfg)
     runtime_litellm_cfg = runtime_litellm_config_path(cfg)
 
@@ -165,7 +174,7 @@ class ResolveCLI(scfg.DataConfig):
                 "allow_unsupported": config.allow_unsupported,
             }),
         )
-        save_plan(plan)
+        save_plan(plan, cfg)
         print(json.dumps(plan["deployment"], indent=2))
         return 0
 
@@ -186,7 +195,7 @@ class ValidateCLI(scfg.DataConfig):
                 "allow_unsupported": config.allow_unsupported,
             }),
         )
-        save_plan(plan)
+        save_plan(plan, cfg)
         print(json.dumps(plan["validated"], indent=2))
         return 0 if plan["validated"]["ok"] else 2
 
@@ -214,10 +223,10 @@ class RenderCLI(scfg.DataConfig):
             }),
         )
         ensure_renderable(plan)
-        save_plan(plan)
+        save_plan(plan, cfg)
         render_from_lock(root_dir(), plan, assume_yes=bool(config.yes))
-        print(f"Wrote {plan_path()}")
-        print(f"Rendered Compose into {generated_dir()}")
+        print(f"Wrote {plan_path(cfg)}")
+        print(f"Rendered Compose into {generated_dir(cfg)}")
         print(f"Rendered mounted runtime files into {runtime_dir_for_config(cfg)}")
         return 0
 
@@ -240,8 +249,8 @@ class UpCLI(scfg.DataConfig):
             )
         compose_up(
             cfg["runtime"]["compose_cmd"],
-            generated_dir() / "docker-compose.yml",
-            generated_dir() / ".env",
+            generated_dir(cfg) / "docker-compose.yml",
+            generated_dir(cfg) / ".env",
             detach=config.detach,
             remove_orphans=True,
         )
@@ -255,7 +264,7 @@ class DownCLI(scfg.DataConfig):
         cfg = load_config()
         compose_down(
             cfg["runtime"]["compose_cmd"],
-            generated_dir() / "docker-compose.yml",
+            generated_dir(cfg) / "docker-compose.yml",
             runtime_env_path(cfg),
         )
         return 0
@@ -282,18 +291,18 @@ class SwitchCLI(scfg.DataConfig):
             }),
         )
         ensure_renderable(plan)
-        save_plan(plan)
+        save_plan(plan, cfg)
         render_from_lock(root_dir(), plan, assume_yes=bool(config.yes))
         if config.apply:
             compose_down(
                 cfg["runtime"]["compose_cmd"],
-                generated_dir() / "docker-compose.yml",
-                generated_dir() / ".env",
+                generated_dir(cfg) / "docker-compose.yml",
+                generated_dir(cfg) / ".env",
             )
             compose_up(
                 cfg["runtime"]["compose_cmd"],
-                generated_dir() / "docker-compose.yml",
-                generated_dir() / ".env",
+                generated_dir(cfg) / "docker-compose.yml",
+                generated_dir(cfg) / ".env",
                 detach=False,
                 remove_orphans=True,
             )
@@ -307,7 +316,12 @@ class ExplainCLI(scfg.DataConfig):
     @classmethod
     def main(cls, argv=1, **kwargs):
         config = cls.cli(argv=argv, data=kwargs)
-        target = root_dir() / (config.file or PLAN_FILE)
+        if config.file:
+            target = Path(config.file)
+            if not target.is_absolute():
+                target = root_dir() / target
+        else:
+            target = plan_path()
         if not target.exists():
             raise SystemExit(f"Missing file: {target}")
         print(json.dumps(load_yaml(target), indent=2))

@@ -9,6 +9,7 @@ from .config import (
     load_kubeai_resource_profiles,
     merged_catalogs,
     normalized_cluster,
+    normalized_output,
     normalized_state,
     resource_profiles_to_kubeai_values,
 )
@@ -242,6 +243,7 @@ def resolve(
             "logging_level": str(profile.get("vllm", {}).get("logging_level", "INFO")),
         },
         "state": normalized_state(root, config.get("state", {})),
+        "output": normalized_output(root, config.get("output", {})),
         "cluster": normalized_cluster(config.get("cluster", {})),
         "resource_profiles": resource_profiles,
         "resource_profiles_values": resource_profiles_values,

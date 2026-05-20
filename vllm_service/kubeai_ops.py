@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from .config import GENERATED_DIR_NAME, KUBEAI_GENERATED_SUBDIR, normalized_output
+
 
 class CommandError(RuntimeError):
     pass
@@ -20,7 +22,12 @@ def deploy_rendered_artifacts(root: Path, deployment: dict) -> None:
     namespace = cluster.get("namespace", "kubeai")
     release_name = cluster.get("kubeai_release_name", "kubeai")
     chart = cluster.get("kubeai_chart", "kubeai/kubeai")
-    generated = root / "generated" / "kubeai"
+    output_cfg = deployment.get("output")
+    if output_cfg:
+        output_root = Path(normalized_output(root, output_cfg)["generated_dir"])
+    else:
+        output_root = root / GENERATED_DIR_NAME
+    generated = output_root / KUBEAI_GENERATED_SUBDIR
     values_file = generated / "kubeai-values.yaml"
     namespace_file = generated / "namespace.yaml"
     models_file = generated / "models.yaml"

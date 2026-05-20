@@ -25,6 +25,12 @@ def _cfg(tmp_path: Path, *, backend: str = "compose") -> dict:
         "runtime": "state/runtime",
     }
     cfg["ports"] = {"litellm": 14000, "open_webui": 13000, "postgres": 15432}
+    # Pin rendered artifacts under tmp_path. Without this, the resolver
+    # would emit deployment["output"]["generated_dir"] pointing at the
+    # machine-wide default (/data/service/docker/vllm-stack/generated)
+    # on hosts where that path tree already exists, breaking these tests'
+    # ``tmp_path / "generated"`` assertions.
+    cfg["output"] = {"generated_dir": "generated"}
     return cfg
 
 
@@ -753,3 +759,35 @@ def test_default_state_paths_include_vllm_cache() -> None:
 
     normalized = normalized_state(Path("/tmp/example-root"), {"vllm_cache": "custom/vllm"})
     assert normalized["vllm_cache"] == "/tmp/example-root/custom/vllm"
+
+
+def test_output_generated_dir_redirects_compose_render(tmp_path: Path) -> None:
+    """Configured output.generated_dir takes precedence over the default."""
+    cfg = _cfg(tmp_path)
+    cfg["output"] = {"generated_dir": str(tmp_path / "custom-out")}
+    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
+    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    assert (tmp_path / "custom-out" / "docker-compose.yml").exists()
+    assert (tmp_path / "custom-out" / ".env").exists()
+    # The repo-local generated/ is not touched.
+    assert not (tmp_path / "generated").exists()
+
+
+def test_output_generated_dir_redirects_kubeai_render(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, backend="kubeai")
+    cfg["output"] = {"generated_dir": str(tmp_path / "custom-out")}
+    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
+    render_kubeai_artifacts(tmp_path, {"deployment": deployment})
+    assert (tmp_path / "custom-out" / "kubeai" / "models.yaml").exists()
+    assert (tmp_path / "custom-out" / "kubeai" / "kubeai-values.yaml").exists()
+    assert not (tmp_path / "generated").exists()
+
+
+def test_normalized_output_anchors_relative_paths_on_root() -> None:
+    from vllm_service.config import normalized_output
+
+    normalized = normalized_output(Path("/srv/checkout"), {"generated_dir": "out"})
+    assert normalized["generated_dir"] == "/srv/checkout/out"
+
+    normalized = normalized_output(Path("/srv/checkout"), {"generated_dir": "/abs/path"})
+    assert normalized["generated_dir"] == "/abs/path"

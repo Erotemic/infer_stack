@@ -30,6 +30,48 @@ python manage.py smoke-test
 python manage.py describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
 ```
 
+## Where rendered artifacts live
+
+Rendered Compose / KubeAI artifacts go into a **machine-wide** output
+directory rather than the repo checkout, so multiple users can develop
+against the same repo on one host without stomping on each other's
+generated files.
+
+Default target:
+
+```text
+/data/service/docker/vllm-stack/generated/
+  docker-compose.yml
+  .env
+  plan.yaml
+  kubeai/...
+```
+
+The default kicks in whenever `/data/service/docker/` exists on the
+host (the same convention `state.*` paths use). On other machines —
+including CI and tests — the renderer falls back to `./generated/`
+relative to the repo checkout, preserving the old behavior.
+
+Override per user, in order of precedence:
+
+1. `--generated-dir /path/to/out` on any command that accepts overrides
+   (`setup`, `render`, `up`, `deploy`, `switch`, ...).
+2. `VLLM_SERVICE_GENERATED_DIR=/path/to/out` env var.
+3. `output.generated_dir` in `config.yaml` (persisted by `setup` from
+   whichever of the above was in effect when you ran it).
+
+Examples:
+
+```bash
+python manage.py setup --backend compose --profile <p> \
+  --generated-dir /home/$USER/vllm-out
+VLLM_SERVICE_GENERATED_DIR=/tmp/scratch python manage.py render
+```
+
+`config.yaml`, `models.yaml`, and `kubeai-values.local.yaml` remain
+user-local in your working directory — only the **output** of the
+renderer moves to the shared location.
+
 ---
 
 ## Backend 1: Compose

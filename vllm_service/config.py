@@ -12,14 +12,36 @@ from .hardware import detect_inventory
 
 CONFIG_FILE = Path("config.yaml")
 MODELS_FILE = Path("models.yaml")
-GENERATED_DIR = Path("generated")
-PLAN_FILE = GENERATED_DIR / "plan.yaml"
-KUBEAI_GENERATED_DIR = GENERATED_DIR / "kubeai"
-KUBEAI_VALUES_FILE = KUBEAI_GENERATED_DIR / "kubeai-values.yaml"
+
+# Filenames/sub-paths inside whatever the resolved generated directory is.
+# The directory itself is configurable per machine and per user via
+# ``output.generated_dir`` in config.yaml, the ``VLLM_SERVICE_GENERATED_DIR``
+# env var, or the ``--generated-dir`` CLI flag.
+GENERATED_DIR_NAME = "generated"
+PLAN_FILENAME = "plan.yaml"
+KUBEAI_GENERATED_SUBDIR = "kubeai"
+KUBEAI_VALUES_FILENAME = "kubeai-values.yaml"
+
+# Legacy module-level constants kept for callers that still treat
+# ``generated/`` as the canonical relative output location (e.g.
+# ``cli_scfg.py`` and historical docs/tests). New code should use the
+# ``generated_dir_for_config`` / ``plan_path_for_config`` helpers below.
+GENERATED_DIR = Path(GENERATED_DIR_NAME)
+PLAN_FILE = GENERATED_DIR / PLAN_FILENAME
+KUBEAI_GENERATED_DIR = GENERATED_DIR / KUBEAI_GENERATED_SUBDIR
+KUBEAI_VALUES_FILE = KUBEAI_GENERATED_DIR / KUBEAI_VALUES_FILENAME
 KUBEAI_LOCAL_VALUES_FILE = Path("kubeai-values.local.yaml")
 
 RESOLVED_FILE = PLAN_FILE
 LOCK_FILE = PLAN_FILE
+
+# Default machine-wide target for rendered artifacts. The parent
+# (``/data/service/docker``) existing is treated as the signal that this
+# host follows the shared-storage convention used for ``state.*`` paths
+# (see ``_default_storage_root``); when it doesn't, we fall back to a
+# per-cwd ``generated/`` directory so tests and ad-hoc tooling keep
+# working without any new configuration.
+DEFAULT_GENERATED_ROOT = Path("/data/service/docker/vllm-stack/generated")
 
 PINNED_IMAGES = {
     "postgres": "postgres:16.8",
@@ -52,6 +74,48 @@ def default_state_paths() -> dict[str, str]:
         "postgres_litellm": str(storage_root / "postgres-litellm"),
         "runtime": str(storage_root / "runtime"),
     }
+
+
+def _default_generated_dir() -> Path:
+    if DEFAULT_GENERATED_ROOT.parent.exists():
+        return DEFAULT_GENERATED_ROOT
+    return Path.cwd() / GENERATED_DIR_NAME
+
+
+def default_output_config() -> dict[str, str]:
+    return {"generated_dir": str(_default_generated_dir())}
+
+
+def normalized_output(root: Path, output_cfg: dict[str, Any] | None) -> dict[str, str]:
+    """Resolve the output section to absolute paths.
+
+    Relative ``generated_dir`` values are anchored on ``root`` so that
+    in-cwd configs and tests continue to point at ``<root>/generated``
+    without needing to encode an absolute path.
+    """
+    normalized = deepcopy(default_output_config())
+    raw = (output_cfg or {}).get("generated_dir")
+    candidate = Path(raw) if raw else Path(normalized["generated_dir"])
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    normalized["generated_dir"] = str(candidate)
+    return normalized
+
+
+def generated_dir_for_config(root: Path, cfg: dict[str, Any]) -> Path:
+    return Path(normalized_output(root, cfg.get("output", {}))["generated_dir"])
+
+
+def plan_path_for_config(root: Path, cfg: dict[str, Any]) -> Path:
+    return generated_dir_for_config(root, cfg) / PLAN_FILENAME
+
+
+def kubeai_generated_dir_for_config(root: Path, cfg: dict[str, Any]) -> Path:
+    return generated_dir_for_config(root, cfg) / KUBEAI_GENERATED_SUBDIR
+
+
+def kubeai_values_path_for_config(root: Path, cfg: dict[str, Any]) -> Path:
+    return kubeai_generated_dir_for_config(root, cfg) / KUBEAI_VALUES_FILENAME
 
 
 def default_cluster_config() -> dict[str, Any]:
@@ -235,6 +299,7 @@ def initial_config() -> dict[str, Any]:
         "ports": deepcopy(DEFAULT_PORTS),
         "images": deepcopy(PINNED_IMAGES),
         "state": default_state_paths(),
+        "output": default_output_config(),
         "cluster": default_cluster_config(),
         "resource_profiles": default_resource_profiles(),
         "profiles": {},

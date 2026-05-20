@@ -5,7 +5,7 @@ from pathlib import Path
 
 from jinja2 import BaseLoader, Environment
 
-from ..config import normalized_state
+from ..config import GENERATED_DIR_NAME, normalized_output, normalized_state
 from ..diff_prompt import confirm_writes
 from ..env_utils import ensure_secret, parse_env_file, write_env_file
 
@@ -23,11 +23,20 @@ def render_compose_artifacts(root: Path, lock_data: dict, *, assume_yes: bool = 
     written. The .env file is updated separately and is not included in the
     confirmation diff because it carries generated secrets.
     """
-    generated = root / "generated"
-    generated.mkdir(parents=True, exist_ok=True)
-
     deployment = dict(lock_data.get("deployment", {}))
     deployment["state"] = normalized_state(root, deployment.get("state", {}))
+    # The resolver populates ``output.generated_dir`` from config. Callers
+    # that hand-build a deployment dict (older tests, ad-hoc tooling) won't
+    # have one, so fall back to the historical ``<root>/generated`` layout
+    # rather than the machine-wide default — those callers shouldn't have
+    # to know about the new config section.
+    output_cfg = deployment.get("output")
+    if output_cfg:
+        deployment["output"] = normalized_output(root, output_cfg)
+    else:
+        deployment["output"] = {"generated_dir": str(root / GENERATED_DIR_NAME)}
+    generated = Path(deployment["output"]["generated_dir"])
+    generated.mkdir(parents=True, exist_ok=True)
     runtime_dir = Path(deployment["state"]["runtime"])
     runtime_dir.mkdir(parents=True, exist_ok=True)
 

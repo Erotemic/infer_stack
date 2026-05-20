@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from .config import GENERATED_DIR_NAME, normalized_output
 from .profile_runtime import default_base_url, export_transport_config
 
 # Transitional compatibility layer:
@@ -13,12 +14,28 @@ from .profile_runtime import default_base_url, export_transport_config
 # becomes the primary path.
 
 
-def benchmark_bundle_dir(root: Path, profile_name: str) -> Path:
-    return root / "generated" / "benchmark" / profile_name
+def _resolve_generated_dir(root: Path, generated_dir: Path | None) -> Path:
+    if generated_dir is not None:
+        p = Path(generated_dir)
+        if not p.is_absolute():
+            p = root / p
+        return p
+    return root / GENERATED_DIR_NAME
 
 
-def helm_bundle_dir(root: Path, profile_name: str) -> Path:
-    return root / "generated" / "helm" / profile_name
+def benchmark_bundle_dir(root: Path, profile_name: str, *, generated_dir: Path | None = None) -> Path:
+    return _resolve_generated_dir(root, generated_dir) / "benchmark" / profile_name
+
+
+def helm_bundle_dir(root: Path, profile_name: str, *, generated_dir: Path | None = None) -> Path:
+    return _resolve_generated_dir(root, generated_dir) / "helm" / profile_name
+
+
+def _generated_dir_for_deployment(root: Path, deployment: dict) -> Path:
+    output_cfg = deployment.get("output")
+    if output_cfg:
+        return Path(normalized_output(root, output_cfg)["generated_dir"])
+    return root / GENERATED_DIR_NAME
 
 
 def _maybe_repo_relative(root: Path, target: Path) -> str:
@@ -108,7 +125,15 @@ def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | Non
         raise ValueError("Cannot export a benchmark bundle for a profile with no resolved services")
 
     default_dir = output_dir is None
-    bundle_dir = (output_dir or benchmark_bundle_dir(root, deployment["serving_profile"]["name"])).resolve()
+    deployment_generated = _generated_dir_for_deployment(root, deployment)
+    bundle_dir = (
+        output_dir
+        or benchmark_bundle_dir(
+            root,
+            deployment["serving_profile"]["name"],
+            generated_dir=deployment_generated,
+        )
+    ).resolve()
     bundle_dir.mkdir(parents=True, exist_ok=True)
     endpoint_shape = _service_endpoint_shape(service, deployment, base_url=base_url)
     transport = export_transport_config(service, deployment, base_url=base_url)
@@ -187,7 +212,11 @@ def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | Non
 
     legacy_bundle_dir = None
     if default_dir:
-        legacy_bundle_dir = helm_bundle_dir(root, deployment["serving_profile"]["name"]).resolve()
+        legacy_bundle_dir = helm_bundle_dir(
+            root,
+            deployment["serving_profile"]["name"],
+            generated_dir=deployment_generated,
+        ).resolve()
         legacy_bundle_dir.mkdir(parents=True, exist_ok=True)
         for path in [
             model_deployments_path,

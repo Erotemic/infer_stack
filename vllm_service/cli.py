@@ -14,15 +14,16 @@ from .catalog import PROFILE_NAME_ALIASES, profile_summary
 from .benchmark import run_benchmark
 from .config import (
     CONFIG_FILE,
-    GENERATED_DIR,
-    KUBEAI_GENERATED_DIR,
     MODELS_FILE,
-    PLAN_FILE,
+    default_output_config,
+    generated_dir_for_config,
     initial_config,
+    kubeai_generated_dir_for_config,
     kubeai_local_values_path,
     load_kubeai_resource_profiles,
     load_yaml,
     normalized_catalogs,
+    plan_path_for_config,
     save_kubeai_resource_profiles,
     save_yaml,
 )
@@ -51,16 +52,32 @@ def models_path() -> Path:
     return root_dir() / MODELS_FILE
 
 
-def generated_dir() -> Path:
-    return root_dir() / GENERATED_DIR
+def generated_dir(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg if cfg is not None else _safe_load_config()
+    return generated_dir_for_config(root_dir(), cfg)
 
 
-def kubeai_generated_dir() -> Path:
-    return root_dir() / KUBEAI_GENERATED_DIR
+def kubeai_generated_dir(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg if cfg is not None else _safe_load_config()
+    return kubeai_generated_dir_for_config(root_dir(), cfg)
 
 
-def plan_path() -> Path:
-    return root_dir() / PLAN_FILE
+def plan_path(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg if cfg is not None else _safe_load_config()
+    return plan_path_for_config(root_dir(), cfg)
+
+
+def _safe_load_config() -> dict[str, Any]:
+    """Load config.yaml if present; otherwise return defaults.
+
+    Used by helpers that may run before a config exists (e.g. ``cmd_init``
+    or ``cmd_explain --file <path>``). Callers that already have a cfg in
+    hand should pass it explicitly to avoid redundant disk reads.
+    """
+    path = config_path()
+    if path.exists():
+        return load_yaml(path)
+    return initial_config()
 
 
 def load_config() -> dict[str, Any]:
@@ -136,6 +153,7 @@ def apply_config_overrides(cfg: dict[str, Any], args: argparse.Namespace | None)
     out.setdefault("runtime", {})
     out.setdefault("ports", {})
     out.setdefault("state", {})
+    out.setdefault("output", {})
     out.setdefault("cluster", {})
     out["cluster"].setdefault("ingress", {})
 
@@ -177,6 +195,15 @@ def apply_config_overrides(cfg: dict[str, Any], args: argparse.Namespace | None)
     if runtime_dir:
         out["state"]["runtime"] = runtime_dir
 
+    generated_dir_override = _arg_or_env(args, "generated_dir", "VLLM_SERVICE_GENERATED_DIR")
+    if generated_dir_override:
+        out["output"]["generated_dir"] = generated_dir_override
+    elif not out["output"].get("generated_dir"):
+        # Older configs predate the ``output`` section; populate it so the
+        # resolved path is visible/editable in config.yaml instead of being
+        # silently picked up from defaults each run.
+        out["output"]["generated_dir"] = default_output_config()["generated_dir"]
+
     namespace = _arg_or_env(args, "namespace", "VLLM_SERVICE_NAMESPACE")
     if namespace:
         out["cluster"]["namespace"] = namespace
@@ -206,7 +233,7 @@ def runtime_dir_for_config(cfg: dict[str, Any]) -> Path:
 
 
 def runtime_env_path(cfg: dict[str, Any]) -> Path:
-    return generated_dir() / ".env"
+    return generated_dir(cfg) / ".env"
 
 
 def runtime_litellm_config_path(cfg: dict[str, Any]) -> Path:
@@ -256,6 +283,7 @@ def has_runtime_overrides(args: argparse.Namespace | None) -> bool:
         "ingress_host",
         "ingress_enabled",
         "simulate_hardware",
+        "generated_dir",
     ]
     if any(hasattr(args, attr) and getattr(args, attr) is not None for attr in attrs):
         return True
@@ -269,6 +297,7 @@ def has_runtime_overrides(args: argparse.Namespace | None) -> bool:
         "VLLM_SERVICE_NAMESPACE",
         "VLLM_SERVICE_INGRESS_HOST",
         "VLLM_SERVICE_INGRESS_ENABLED",
+        "VLLM_SERVICE_GENERATED_DIR",
     ]
     return any(_env_text(name) is not None for name in env_names)
 
@@ -290,8 +319,8 @@ def build_plan(
     }
 
 
-def save_plan(plan: dict[str, Any]) -> Path:
-    path = plan_path()
+def save_plan(plan: dict[str, Any], cfg: dict[str, Any] | None = None) -> Path:
+    path = plan_path(cfg)
     save_yaml(path, plan)
     return path
 
@@ -308,20 +337,21 @@ def ensure_renderable(plan: dict[str, Any]) -> None:
 def render_is_stale(cfg: dict[str, Any] | None = None) -> bool:
     cfg = load_config() if cfg is None else cfg
     cfg_path = config_path()
-    current_plan = plan_path()
+    current_plan = plan_path(cfg)
     backend = backend_name(cfg)
 
     if backend == "kubeai":
+        kubeai_root = kubeai_generated_dir(cfg)
         required_outputs = [
             current_plan,
-            kubeai_generated_dir() / "namespace.yaml",
-            kubeai_generated_dir() / "kubeai-values.yaml",
-            kubeai_generated_dir() / "models.yaml",
+            kubeai_root / "namespace.yaml",
+            kubeai_root / "kubeai-values.yaml",
+            kubeai_root / "models.yaml",
         ]
     else:
         required_outputs = [
             current_plan,
-            generated_dir() / "docker-compose.yml",
+            generated_dir(cfg) / "docker-compose.yml",
             runtime_env_path(cfg),
             runtime_litellm_config_path(cfg),
         ]
@@ -372,8 +402,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
         if "resourceProfiles" not in values_doc:
             raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
         target = save_kubeai_resource_profiles(root_dir(), values_doc)
-        if plan_path().exists():
-            plan_path().unlink()
+        if plan_path(cfg).exists():
+            plan_path(cfg).unlink()
         print(f"Wrote {target}")
     print(f"Wrote {cfg_path}")
     print(
@@ -391,7 +421,7 @@ def cmd_resolve(args: argparse.Namespace) -> int:
         allow_unsupported=effective_allow_unsupported(args, cfg),
         inventory=effective_inventory(args),
     )
-    save_plan(plan)
+    save_plan(plan, cfg)
     print(json.dumps(plan["deployment"], indent=2))
     return 0
 
@@ -404,7 +434,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         allow_unsupported=effective_allow_unsupported(args, cfg),
         inventory=effective_inventory(args),
     )
-    save_plan(plan)
+    save_plan(plan, cfg)
     print(json.dumps(plan["validated"], indent=2))
     return 0 if plan["validated"]["ok"] else 2
 
@@ -421,7 +451,7 @@ def cmd_lock(args: argparse.Namespace) -> int:
         raise SystemExit(
             "Refusing to write plan.yaml because validation failed. Use --allow-unsupported to override."
         )
-    save_plan(plan)
+    save_plan(plan, cfg)
     print(json.dumps(plan, indent=2))
     return 0
 
@@ -435,13 +465,13 @@ def cmd_render(args: argparse.Namespace) -> int:
         inventory=effective_inventory(args),
     )
     ensure_renderable(plan)
-    save_plan(plan)
+    save_plan(plan, cfg)
     render_from_lock(root_dir(), plan, assume_yes=bool(getattr(args, "yes", False)))
-    print(f"Wrote {plan_path()}")
+    print(f"Wrote {plan_path(cfg)}")
     if backend_name(cfg) == "kubeai":
-        print(f"Rendered KubeAI artifacts into {kubeai_generated_dir()}")
+        print(f"Rendered KubeAI artifacts into {kubeai_generated_dir(cfg)}")
     else:
-        print(f"Rendered Compose into {generated_dir()}")
+        print(f"Rendered Compose into {generated_dir(cfg)}")
         print(f"Rendered mounted runtime files into {runtime_dir_for_config(cfg)}")
     return 0
 
@@ -459,13 +489,14 @@ def cmd_up(args: argparse.Namespace) -> int:
             namespace=getattr(args, "namespace", None),
             ingress_host=getattr(args, "ingress_host", None),
             ingress_enabled=getattr(args, "ingress_enabled", None),
+            generated_dir=getattr(args, "generated_dir", None),
             allow_unsupported=effective_allow_unsupported(args, cfg),
             simulate_hardware=getattr(args, "simulate_hardware", None),
             yes=bool(getattr(args, "yes", False)),
         )
         cmd_render(render_args)
-    compose_file = generated_dir() / "docker-compose.yml"
-    env_file = generated_dir() / ".env"
+    compose_file = generated_dir(cfg) / "docker-compose.yml"
+    env_file = generated_dir(cfg) / ".env"
     # TODO: today we recreate litellm + open-webui wholesale on any apply.
     # That's correct but coarse — every active chat sees a brief router
     # blip even when only one of several vLLM services actually changed.
@@ -505,7 +536,7 @@ def cmd_down(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
     if backend_name(cfg) != "compose":
         raise SystemExit("`down` only supports the compose backend.")
-    compose_down(cfg["runtime"]["compose_cmd"], generated_dir() / "docker-compose.yml", runtime_env_path(cfg))
+    compose_down(cfg["runtime"]["compose_cmd"], generated_dir(cfg) / "docker-compose.yml", runtime_env_path(cfg))
     return 0
 
 
@@ -522,12 +553,12 @@ def cmd_switch(args: argparse.Namespace) -> int:
         inventory=effective_inventory(args),
     )
     ensure_renderable(plan)
-    save_plan(plan)
+    save_plan(plan, cfg)
     render_from_lock(root_dir(), plan, assume_yes=bool(getattr(args, "yes", False)))
     if args.apply:
         if backend_name(cfg) == "compose":
-            compose_file = generated_dir() / "docker-compose.yml"
-            env_file = generated_dir() / ".env"
+            compose_file = generated_dir(cfg) / "docker-compose.yml"
+            env_file = generated_dir(cfg) / ".env"
             # TODO: this recreates litellm + open-webui wholesale, which
             # interrupts every model — even ones that didn't change between
             # profiles. A nicer future design would diff the new router
@@ -598,7 +629,12 @@ def cmd_list_profiles(args: argparse.Namespace) -> int:
 
 
 def cmd_explain(args: argparse.Namespace) -> int:
-    target = root_dir() / (args.file or PLAN_FILE)
+    if args.file:
+        target = Path(args.file)
+        if not target.is_absolute():
+            target = root_dir() / target
+    else:
+        target = plan_path()
     if not target.exists():
         raise SystemExit(f"Missing file: {target}")
     print(json.dumps(load_yaml(target), indent=2))
@@ -699,13 +735,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             namespace=getattr(args, "namespace", None),
             ingress_host=getattr(args, "ingress_host", None),
             ingress_enabled=getattr(args, "ingress_enabled", None),
+            generated_dir=getattr(args, "generated_dir", None),
             allow_unsupported=effective_allow_unsupported(args, cfg),
             simulate_hardware=getattr(args, "simulate_hardware", None),
             yes=bool(getattr(args, "yes", False)),
         )
         cmd_render(render_args)
     if backend_name(cfg) == "kubeai":
-        plan = load_yaml(plan_path())
+        plan = load_yaml(plan_path(cfg))
         try:
             deploy_rendered_artifacts(root_dir(), plan["deployment"])
         except CommandError as ex:
@@ -718,8 +755,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         return 0
     compose_up(
         cfg["runtime"]["compose_cmd"],
-        generated_dir() / "docker-compose.yml",
-        generated_dir() / ".env",
+        generated_dir(cfg) / "docker-compose.yml",
+        generated_dir(cfg) / ".env",
         detach=args.detach,
         remove_orphans=True,
     )
@@ -739,7 +776,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 f"Original error: {ex}"
             ) from ex
         return 0
-    proc = subprocess.run(cfg["runtime"]["compose_cmd"].split() + ["-f", str(generated_dir() / "docker-compose.yml"), "ps"])
+    proc = subprocess.run(cfg["runtime"]["compose_cmd"].split() + ["-f", str(generated_dir(cfg) / "docker-compose.yml"), "ps"])
     return int(proc.returncode)
 
 
@@ -823,6 +860,7 @@ def cmd_smoke_test(args: argparse.Namespace) -> int:
 
 
 def cmd_kubeai_sync_resource_profiles(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args, allow_missing=True)
     source = Path(args.from_file)
     if not source.is_absolute():
         source = root_dir() / source
@@ -830,8 +868,8 @@ def cmd_kubeai_sync_resource_profiles(args: argparse.Namespace) -> int:
     if "resourceProfiles" not in values_doc:
         raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
     target = save_kubeai_resource_profiles(root_dir(), values_doc)
-    if plan_path().exists():
-        plan_path().unlink()
+    if plan_path(cfg).exists():
+        plan_path(cfg).unlink()
     profiles, _, _ = load_kubeai_resource_profiles(root_dir())
     print(f"Wrote {target}")
     print(f"Synced {len(profiles)} KubeAI resource profile(s)")
@@ -847,6 +885,7 @@ def add_override_args(
     include_ports: bool = False,
     include_cluster: bool = False,
     include_state: bool = False,
+    include_output: bool = True,
 ) -> None:
     if include_profile:
         parser.add_argument("--profile", default=None)
@@ -861,6 +900,18 @@ def add_override_args(
     if include_state:
         parser.add_argument("--state-root", default=None)
         parser.add_argument("--runtime-dir", default=None)
+    if include_output:
+        parser.add_argument(
+            "--generated-dir",
+            default=None,
+            help=(
+                "Directory to write rendered artifacts (docker-compose.yml, "
+                ".env, plan.yaml, kubeai/*) into. Defaults to "
+                "/data/service/docker/vllm-stack/generated when /data/service/docker "
+                "exists, otherwise ./generated. May also be set via the "
+                "VLLM_SERVICE_GENERATED_DIR env var or output.generated_dir in config.yaml."
+            ),
+        )
     if include_cluster:
         parser.add_argument("--namespace", default=None)
         parser.add_argument("--ingress-host", default=None)
