@@ -763,21 +763,33 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_logs(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        raise SystemExit(
-            "`logs` only supports the compose backend. For kubeai, "
-            "use `kubectl -n <namespace> logs <pod>` (see `python manage.py status` "
-            "for pod names)."
-        )
+def _compose_base_cmd(cfg: dict[str, Any]) -> list[str]:
+    """Build the shared ``docker compose -f ... --env-file ...`` prefix.
+
+    Every compose-wrapper subcommand uses this so that the user doesn't
+    need to cd into the rendered-artifacts directory just to run a
+    one-shot ``ps`` / ``restart`` / ``exec`` / ``pull`` / ``logs``.
+    """
     compose_file = generated_dir(cfg) / "docker-compose.yml"
     env_file = generated_dir(cfg) / ".env"
-    cmd = cfg["runtime"]["compose_cmd"].split() + [
+    return cfg["runtime"]["compose_cmd"].split() + [
         "-f", str(compose_file),
         "--env-file", str(env_file),
-        "logs",
     ]
+
+
+def _require_compose_backend(cfg: dict[str, Any], cmd_name: str) -> None:
+    if backend_name(cfg) != "compose":
+        raise SystemExit(
+            f"`{cmd_name}` only supports the compose backend. For kubeai, "
+            f"use the equivalent kubectl command (e.g. `kubectl -n <namespace> ...`)."
+        )
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    _require_compose_backend(cfg, "logs")
+    cmd = _compose_base_cmd(cfg) + ["logs"]
     if getattr(args, "follow", False):
         cmd.append("--follow")
     tail = getattr(args, "tail", None)
@@ -787,6 +799,93 @@ def cmd_logs(args: argparse.Namespace) -> int:
         cmd.append("--no-color")
     if getattr(args, "timestamps", False):
         cmd.append("--timestamps")
+    cmd.extend(getattr(args, "services", None) or [])
+    proc = subprocess.run(cmd)
+    return int(proc.returncode)
+
+
+def cmd_ps(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    _require_compose_backend(cfg, "ps")
+    cmd = _compose_base_cmd(cfg) + ["ps"]
+    if getattr(args, "all", False):
+        cmd.append("--all")
+    if getattr(args, "services_only", False):
+        cmd.append("--services")
+    if getattr(args, "quiet", False):
+        cmd.append("--quiet")
+    cmd.extend(getattr(args, "services", None) or [])
+    proc = subprocess.run(cmd)
+    return int(proc.returncode)
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    _require_compose_backend(cfg, "restart")
+    cmd = _compose_base_cmd(cfg) + ["restart"]
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None:
+        cmd.extend(["--timeout", str(timeout)])
+    cmd.extend(getattr(args, "services", None) or [])
+    proc = subprocess.run(cmd)
+    return int(proc.returncode)
+
+
+def cmd_exec(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    _require_compose_backend(cfg, "exec")
+    if not getattr(args, "service", None):
+        raise SystemExit("exec: missing required service name")
+    cmd = _compose_base_cmd(cfg) + ["exec"]
+    if getattr(args, "no_tty", False):
+        cmd.append("-T")
+    user = getattr(args, "user", None)
+    if user:
+        cmd.extend(["--user", user])
+    workdir = getattr(args, "workdir", None)
+    if workdir:
+        cmd.extend(["--workdir", workdir])
+    for kv in getattr(args, "env", None) or []:
+        cmd.extend(["--env", kv])
+    cmd.append(args.service)
+    remainder = getattr(args, "command", None) or []
+    if not remainder:
+        # Default to a shell prompt — that's the 95% use case.
+        remainder = ["sh"]
+    cmd.extend(remainder)
+    proc = subprocess.run(cmd)
+    return int(proc.returncode)
+
+
+def cmd_pull(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    _require_compose_backend(cfg, "pull")
+    cmd = _compose_base_cmd(cfg) + ["pull"]
+    if getattr(args, "quiet", False):
+        cmd.append("--quiet")
+    if getattr(args, "ignore_pull_failures", False):
+        cmd.append("--ignore-pull-failures")
+    cmd.extend(getattr(args, "services", None) or [])
+    proc = subprocess.run(cmd)
+    return int(proc.returncode)
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    _require_compose_backend(cfg, "start")
+    cmd = _compose_base_cmd(cfg) + ["start"]
+    cmd.extend(getattr(args, "services", None) or [])
+    proc = subprocess.run(cmd)
+    return int(proc.returncode)
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    _require_compose_backend(cfg, "stop")
+    cmd = _compose_base_cmd(cfg) + ["stop"]
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None:
+        cmd.extend(["--timeout", str(timeout)])
     cmd.extend(getattr(args, "services", None) or [])
     proc = subprocess.run(cmd)
     return int(proc.returncode)
@@ -805,7 +904,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 f"Original error: {ex}"
             ) from ex
         return 0
-    proc = subprocess.run(cfg["runtime"]["compose_cmd"].split() + ["-f", str(generated_dir(cfg) / "docker-compose.yml"), "ps"])
+    proc = subprocess.run(_compose_base_cmd(cfg) + ["ps"])
     return int(proc.returncode)
 
 
@@ -1113,6 +1212,64 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--timestamps", action="store_true")
     s.add_argument("--no-color", action="store_true")
     s.set_defaults(func=cmd_logs)
+
+    s = sub.add_parser("ps", help="`docker compose ps` for the rendered stack.")
+    add_override_args(s, include_backend=True, include_compose=True)
+    s.add_argument("services", nargs="*", help="Optional service filter.")
+    s.add_argument("-a", "--all", action="store_true", help="Include stopped containers.")
+    s.add_argument(
+        "--services-only",
+        action="store_true",
+        help="Print only service names (passes --services to docker compose).",
+    )
+    s.add_argument("-q", "--quiet", action="store_true", help="Print only container IDs.")
+    s.set_defaults(func=cmd_ps)
+
+    s = sub.add_parser("restart", help="`docker compose restart [services...]`.")
+    add_override_args(s, include_backend=True, include_compose=True)
+    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
+    s.add_argument("--timeout", type=int, default=None, help="Stop timeout in seconds.")
+    s.set_defaults(func=cmd_restart)
+
+    s = sub.add_parser(
+        "exec",
+        help="`docker compose exec <service> [command...]` (defaults to a shell).",
+    )
+    add_override_args(s, include_backend=True, include_compose=True)
+    s.add_argument("service", help="Service name (e.g. postgres-open-webui, open-webui, litellm).")
+    s.add_argument(
+        "command",
+        nargs=argparse.REMAINDER,
+        help="Command to run inside the container. Default: `sh`. Use `--` to separate flags from the command.",
+    )
+    s.add_argument("-T", "--no-tty", action="store_true", help="Disable pseudo-TTY (needed for piping stdin).")
+    s.add_argument("-u", "--user", default=None, help="User to run as inside the container.")
+    s.add_argument("-w", "--workdir", default=None, help="Working directory inside the container.")
+    s.add_argument(
+        "-e", "--env",
+        action="append",
+        default=None,
+        help="Set an env var inside the container. May be repeated. Format: KEY=value.",
+    )
+    s.set_defaults(func=cmd_exec)
+
+    s = sub.add_parser("pull", help="`docker compose pull [services...]`.")
+    add_override_args(s, include_backend=True, include_compose=True)
+    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
+    s.add_argument("-q", "--quiet", action="store_true")
+    s.add_argument("--ignore-pull-failures", action="store_true")
+    s.set_defaults(func=cmd_pull)
+
+    s = sub.add_parser("start", help="`docker compose start [services...]` (re-starts stopped containers).")
+    add_override_args(s, include_backend=True, include_compose=True)
+    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
+    s.set_defaults(func=cmd_start)
+
+    s = sub.add_parser("stop", help="`docker compose stop [services...]` (stops without removing).")
+    add_override_args(s, include_backend=True, include_compose=True)
+    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
+    s.add_argument("--timeout", type=int, default=None)
+    s.set_defaults(func=cmd_stop)
 
     s = sub.add_parser("smoke-test")
     add_override_args(

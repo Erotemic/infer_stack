@@ -24,6 +24,32 @@ python manage.py status
 python manage.py smoke-test
 ```
 
+## Operating the rendered Compose stack
+
+Once the stack is up, common docker compose operations are available as
+`manage.py` subcommands so you don't have to `cd` into the rendered
+output directory or repeat the `-f docker-compose.yml --env-file .env`
+flags. They all resolve the rendered location via the same
+`output.generated_dir` chain as the rest of the CLI.
+
+```bash
+python manage.py ps                              # docker compose ps
+python manage.py ps -a                           # include stopped
+python manage.py logs -f open-webui              # follow one service
+python manage.py logs --tail=200 litellm vllm-*  # tailored backlog
+python manage.py restart open-webui              # restart specific services
+python manage.py stop                            # stop everything (no remove)
+python manage.py start                           # start back up
+python manage.py pull                            # refresh images
+python manage.py exec open-webui                 # default = `sh` shell
+python manage.py exec open-webui -- env          # explicit command
+python manage.py exec postgres-open-webui -- psql -U openwebui openwebui
+```
+
+`exec` defaults the inner command to `sh` so you can drop into a shell
+with no extra typing. Use `--` to separate `manage.py` flags from the
+command running inside the container.
+
 ## Inspect a profile before running it
 
 ```bash
