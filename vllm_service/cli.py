@@ -450,10 +450,6 @@ def cmd_up(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
     if backend_name(cfg) != "compose":
         raise SystemExit("`up` only supports the compose backend. Use `deploy` for kubeai.")
-    prior_litellm_cfg: str | None = None
-    prior_path = runtime_litellm_config_path(cfg)
-    if prior_path.exists():
-        prior_litellm_cfg = prior_path.read_text(encoding="utf-8")
     if has_runtime_overrides(args) or render_is_stale(cfg):
         render_args = argparse.Namespace(
             profile=getattr(args, "profile", None),
@@ -470,29 +466,38 @@ def cmd_up(args: argparse.Namespace) -> int:
         cmd_render(render_args)
     compose_file = generated_dir() / "docker-compose.yml"
     env_file = generated_dir() / ".env"
-    compose_up(
-        cfg["runtime"]["compose_cmd"],
-        compose_file,
-        env_file,
-        detach=args.detach,
-        remove_orphans=True,
-    )
-    new_path = runtime_litellm_config_path(cfg)
-    new_litellm_cfg = new_path.read_text(encoding="utf-8") if new_path.exists() else None
-    if (
-        args.detach
-        and prior_litellm_cfg is not None
-        and new_litellm_cfg is not None
-        and prior_litellm_cfg != new_litellm_cfg
-    ):
-        # Router config changed since the last render. Force-recreate the
-        # router and UI in place so they re-read the new alias list.
-        compose_recreate_router(
+    # TODO: today we recreate litellm + open-webui wholesale on any apply.
+    # That's correct but coarse — every active chat sees a brief router
+    # blip even when only one of several vLLM services actually changed.
+    # A finer design would diff the new router config against the running
+    # one and use LiteLLM's admin API (/model/new, /model/delete) to
+    # add/drop just the affected aliases, leaving unaffected models
+    # serving traffic uninterrupted. Open WebUI's dropdown would still
+    # need a re-fetch, but that can be done without a container recreate.
+    # Worth doing once we have a multi-model deployment where users would
+    # notice the blip.
+    try:
+        compose_up(
             cfg["runtime"]["compose_cmd"],
             compose_file,
             env_file,
-            detach=True,
+            detach=args.detach,
+            remove_orphans=True,
         )
+    finally:
+        if args.detach:
+            # Always force-recreate the router and UI so they re-read the
+            # rendered alias list. In `finally` so it still runs when
+            # compose_up raises (e.g. a vLLM healthcheck times out before
+            # litellm's `depends_on: service_healthy` gate releases) —
+            # that was the failure mode that left a stale model list
+            # advertised on /v1/models after a profile switch.
+            compose_recreate_router(
+                cfg["runtime"]["compose_cmd"],
+                compose_file,
+                env_file,
+                detach=True,
+            )
     return 0
 
 
@@ -510,12 +515,6 @@ def cmd_switch(args: argparse.Namespace) -> int:
     save_yaml(config_path(), persisted_cfg)
     cfg = apply_config_overrides(persisted_cfg, args)
 
-    prior_litellm_cfg: str | None = None
-    if backend_name(cfg) == "compose":
-        prior_path = runtime_litellm_config_path(cfg)
-        if prior_path.exists():
-            prior_litellm_cfg = prior_path.read_text(encoding="utf-8")
-
     plan = build_plan(
         cfg,
         profile_name=args.profile,
@@ -529,22 +528,36 @@ def cmd_switch(args: argparse.Namespace) -> int:
         if backend_name(cfg) == "compose":
             compose_file = generated_dir() / "docker-compose.yml"
             env_file = generated_dir() / ".env"
-            # Bring the stack up convergently. --remove-orphans drops vLLM
-            # services no longer in the rendered compose file. We never run
-            # `down -v` or anything that would touch the Postgres/Open WebUI
-            # volumes.
-            compose_up(
-                cfg["runtime"]["compose_cmd"],
-                compose_file,
-                env_file,
-                detach=True,
-                remove_orphans=True,
-            )
-            new_litellm_cfg = runtime_litellm_config_path(cfg).read_text(encoding="utf-8")
-            if prior_litellm_cfg != new_litellm_cfg:
-                # The router config (model aliases, upstream URLs) changed.
-                # Recreate litellm + open-webui in place so they pick up the
-                # new alias list. Persistent volumes are not touched.
+            # TODO: this recreates litellm + open-webui wholesale, which
+            # interrupts every model — even ones that didn't change between
+            # profiles. A nicer future design would diff the new router
+            # config against the running one and use LiteLLM's admin API
+            # (/model/new, /model/delete) to add/drop just the affected
+            # aliases, leaving unaffected vLLM services serving traffic the
+            # whole time. Open WebUI's dropdown would still need a refresh,
+            # but that can be done without a container restart. Worth doing
+            # once we routinely run multi-model profiles where the blip is
+            # user-visible.
+            try:
+                # Bring the stack up convergently. --remove-orphans drops
+                # vLLM services no longer in the rendered compose file. We
+                # never run `down -v` or anything that would touch the
+                # Postgres/Open WebUI volumes.
+                compose_up(
+                    cfg["runtime"]["compose_cmd"],
+                    compose_file,
+                    env_file,
+                    detach=True,
+                    remove_orphans=True,
+                )
+            finally:
+                # Always recreate litellm + open-webui so they re-read the
+                # new alias list. We used to gate this on a byte-diff of
+                # the rendered litellm_config.yaml, but that left a stale
+                # model list when compose_up raised before the diff ran
+                # (e.g. litellm's `depends_on: service_healthy` on a slow
+                # vLLM service tripping the up timeout). `finally` makes
+                # this fire regardless. Persistent volumes are untouched.
                 compose_recreate_router(
                     cfg["runtime"]["compose_cmd"],
                     compose_file,
