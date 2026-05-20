@@ -763,6 +763,35 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_logs(args: argparse.Namespace) -> int:
+    cfg = config_for_runtime(args)
+    if backend_name(cfg) != "compose":
+        raise SystemExit(
+            "`logs` only supports the compose backend. For kubeai, "
+            "use `kubectl -n <namespace> logs <pod>` (see `python manage.py status` "
+            "for pod names)."
+        )
+    compose_file = generated_dir(cfg) / "docker-compose.yml"
+    env_file = generated_dir(cfg) / ".env"
+    cmd = cfg["runtime"]["compose_cmd"].split() + [
+        "-f", str(compose_file),
+        "--env-file", str(env_file),
+        "logs",
+    ]
+    if getattr(args, "follow", False):
+        cmd.append("--follow")
+    tail = getattr(args, "tail", None)
+    if tail is not None:
+        cmd.extend(["--tail", str(tail)])
+    if getattr(args, "no_color", False):
+        cmd.append("--no-color")
+    if getattr(args, "timestamps", False):
+        cmd.append("--timestamps")
+    cmd.extend(getattr(args, "services", None) or [])
+    proc = subprocess.run(cmd)
+    return int(proc.returncode)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
     if backend_name(cfg) == "kubeai":
@@ -1060,6 +1089,30 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status")
     add_override_args(s, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser(
+        "logs",
+        help="Tail rendered Compose service logs without typing the full docker compose path.",
+    )
+    add_override_args(s, include_backend=True, include_compose=True)
+    s.add_argument(
+        "services",
+        nargs="*",
+        help="Optional service names to filter (e.g. open-webui litellm). Empty = all services.",
+    )
+    s.add_argument(
+        "-f", "--follow",
+        action="store_true",
+        help="Stream logs (docker compose logs -f).",
+    )
+    s.add_argument(
+        "--tail",
+        default=None,
+        help="Tail the last N lines (default: all). Pass a number or 'all'.",
+    )
+    s.add_argument("--timestamps", action="store_true")
+    s.add_argument("--no-color", action="store_true")
+    s.set_defaults(func=cmd_logs)
 
     s = sub.add_parser("smoke-test")
     add_override_args(
