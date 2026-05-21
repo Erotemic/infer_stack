@@ -12,35 +12,49 @@ A serving profile bundles the model, the public served name, placement, and runt
 ## Main commands
 
 ```bash
-python manage.py setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
-python manage.py list-profiles
-python manage.py describe-profile <profile>
-python manage.py validate
-python manage.py render
-python manage.py up -d
-python manage.py deploy
-python manage.py switch <profile> --apply
-python manage.py status
-python manage.py smoke-test
+vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
+vllm-stack list-profiles
+vllm-stack describe-profile <profile>
+vllm-stack validate
+vllm-stack render
+vllm-stack up -d
+vllm-stack deploy
+vllm-stack switch <profile> --apply
+vllm-stack status
+vllm-stack smoke-test
 ```
+
+The CLI is built on [`scriptconfig`](https://gitlab.kitware.com/utils/scriptconfig),
+so every subcommand is also importable as a Python class — useful for
+notebooks, tests, and other scripts:
+
+```python
+from vllm_service.cli import RenderCLI, SmokeTestCLI
+
+RenderCLI.main(argv=False, profile="qwen2-5-7b-instruct-turbo-default", yes=True)
+SmokeTestCLI.main(argv=False, model="qwen/qwen2.5-7b-instruct-turbo")
+```
+
+`manage.py` and `vllm-stack` are aliases for the same entry point;
+shell examples below use `vllm-stack`.
 
 ## Operating the rendered Compose stack
 
 Once the stack is up, common docker compose operations are available as
-`manage.py` subcommands so you don't have to `cd` into the rendered
+`vllm-stack` subcommands so you don't have to `cd` into the rendered
 output directory or repeat the `-f docker-compose.yml --env-file .env`
 flags. They all resolve the rendered location via the same
 `output.generated_dir` chain as the rest of the CLI.
 
 ```bash
-python manage.py ps                              # docker compose ps
-python manage.py ps -a                           # include stopped
-python manage.py logs -f open-webui              # follow one service
-python manage.py logs --tail=200 litellm vllm-*  # tailored backlog
-python manage.py restart open-webui              # restart specific services
-python manage.py stop                            # stop everything (no remove)
-python manage.py start                           # start back up
-python manage.py pull                            # refresh images
+vllm-stack ps                              # docker compose ps
+vllm-stack ps -a                           # include stopped
+vllm-stack logs -f open-webui              # follow one service
+vllm-stack logs --tail=200 litellm vllm-*  # tailored backlog
+vllm-stack restart open-webui              # restart specific services
+vllm-stack stop                            # stop everything (no remove)
+vllm-stack start                           # start back up
+vllm-stack pull                            # refresh images
 ```
 
 For interactive shells / one-shot commands inside a container, run
@@ -53,50 +67,49 @@ use the equivalent ``kubectl`` commands in the meantime.
 ## Inspect a profile before running it
 
 ```bash
-python manage.py describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
+vllm-stack describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
 ```
 
-## Where rendered artifacts live
+## Where config and rendered artifacts live
 
-Rendered Compose / KubeAI artifacts go into a **machine-wide** output
-directory rather than the repo checkout, so multiple users can develop
-against the same repo on one host without stomping on each other's
-generated files.
+`vllm-stack` follows XDG basedir conventions, so where you invoke it
+from never changes which config it reads or where it writes rendered
+artifacts:
 
-Default target:
+| What | Default location | Override |
+| --- | --- | --- |
+| `config.yaml`, `models.yaml`, `kubeai-values.local.yaml` | `~/.config/vllm_service/` (resp. `$XDG_CONFIG_HOME`) | `VLLM_SERVICE_CONFIG_DIR` env var, or `--config-dir` |
+| Rendered `generated/` (docker-compose.yml, plan.yaml, kubeai/*) and `state/` (hf-cache, postgres volumes, bind mounts) | `~/.cache/vllm_service/` (resp. `$XDG_CACHE_HOME`) | `VLLM_SERVICE_DATA_DIR` env var, or `--data-dir` |
 
-```text
-/data/service/docker/vllm-stack/generated/
-  docker-compose.yml
-  .env
-  plan.yaml
-  kubeai/...
-```
+Per-knob overrides still apply on top:
 
-The default kicks in whenever `/data/service/docker/` exists on the
-host (the same convention `state.*` paths use). On other machines —
-including CI and tests — the renderer falls back to `./generated/`
-relative to the repo checkout, preserving the old behavior.
-
-Override per user, in order of precedence:
-
-1. `--generated-dir /path/to/out` on any command that accepts overrides
-   (`setup`, `render`, `up`, `deploy`, `switch`, ...).
-2. `VLLM_SERVICE_GENERATED_DIR=/path/to/out` env var.
-3. `output.generated_dir` in `config.yaml` (persisted by `setup` from
-   whichever of the above was in effect when you ran it).
+* `--generated-dir /path/to/out` (or `VLLM_SERVICE_GENERATED_DIR`, or
+  `output.generated_dir` in `config.yaml`) only moves the rendered
+  artifacts.
+* `--state-root /path` (or `VLLM_SERVICE_STATE_ROOT`) moves all
+  `state.*` paths together. Individual `state.runtime` etc. can be
+  overridden in `config.yaml`.
 
 Examples:
 
 ```bash
-python manage.py setup --backend compose --profile <p> \
-  --generated-dir /home/$USER/vllm-out
-VLLM_SERVICE_GENERATED_DIR=/tmp/scratch python manage.py render
+# Point at a checkout-local config for ad-hoc experiments.
+VLLM_SERVICE_CONFIG_DIR=$PWD vllm-stack setup --backend compose --profile <p>
+
+# Send rendered artifacts somewhere other than ~/.cache.
+vllm-stack render --data-dir /srv/vllm-stack
+
+# Or just the rendered output, leaving state/ in the cache dir.
+vllm-stack render --generated-dir /tmp/scratch-out
 ```
 
-`config.yaml`, `models.yaml`, and `kubeai-values.local.yaml` remain
-user-local in your working directory — only the **output** of the
-renderer moves to the shared location.
+`--config-dir` / `--data-dir` are per-subcommand flags (they live on
+every subcommand), so they appear **after** the subcommand name on the
+CLI. For "set once, applies to everything" use the env vars instead.
+
+User-supplied paths on the CLI (`--file`, `--from-file`,
+`--resource-profiles-file`, `--output-dir`) still resolve against the
+current working directory — they're meant to behave as typed.
 
 ---
 
@@ -109,16 +122,16 @@ Use Compose when you know exactly which profile you want and want the lowest-fri
 Prerequisite: Docker and the `docker compose` plugin must be installed.
 
 ```bash
-python manage.py setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
-python manage.py validate
-python manage.py render
-python manage.py up -d
+vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
+vllm-stack validate
+vllm-stack render
+vllm-stack up -d
 ```
 
 ### Test that it is responding
 
 ```bash
-python manage.py smoke-test
+vllm-stack smoke-test
 ```
 
 The default Compose front door is:
@@ -150,7 +163,7 @@ curl http://127.0.0.1:14000/v1/chat/completions \
 ### Stop it
 
 ```bash
-python manage.py down
+vllm-stack down
 ```
 
 `down` never removes named volumes. The Postgres data directory and the
@@ -222,7 +235,7 @@ of existing lines are preserved where practical.
 ### Switching profiles
 
 ```bash
-python manage.py switch <profile> --apply
+vllm-stack switch <profile> --apply
 ```
 
 `switch --apply` re-renders from the updated `config.yaml`, brings the
@@ -284,7 +297,7 @@ restarted, no `--chat-template` is rendered, and the adapter takes
 effect after a `litellm`-only restart:
 
 ```bash
-python manage.py render
+vllm-stack render
 docker compose -f generated/docker-compose.yml --env-file generated/.env \
   up -d --no-deps --force-recreate litellm
 ```
@@ -340,7 +353,7 @@ Use KubeAI when you want Kubernetes-managed serving.
 
 ### Important rules
 
-1. **Use the same namespace everywhere.** The namespace in `python manage.py setup --namespace ...` must match the namespace where the KubeAI Helm release already exists.
+1. **Use the same namespace everywhere.** The namespace in `vllm-stack setup --namespace ...` must match the namespace where the KubeAI Helm release already exists.
 2. **Prefer the repo-driven path.** The normal path is `setup` -> `validate` -> `render` -> `deploy` -> `status`.
 3. **`kubectl port-forward` stays in the foreground.** Leave it running in one terminal and send requests from another.
 4. **The first request can take a while.** `/openai/v1/models` may work before chat completions work. The first completion may trigger pod creation, image pull, model load, and compile warmup.
@@ -498,7 +511,7 @@ cat values-kubeai-local-gpu.yaml
 Sync that file so `validate` and `render` use the same local resource-profile data:
 
 ```bash
-python manage.py kubeai-sync-resource-profiles --from-file values-kubeai-local-gpu.yaml
+vllm-stack kubeai-sync-resource-profiles --from-file values-kubeai-local-gpu.yaml
 ```
 
 ---
@@ -508,17 +521,17 @@ python manage.py kubeai-sync-resource-profiles --from-file values-kubeai-local-g
 Use this example on a 1-GPU workstation.
 
 ```bash
-python manage.py setup \
+vllm-stack setup \
   --backend kubeai \
   --profile qwen2-5-7b-instruct-turbo-default \
   --namespace "${KUBEAI_NAMESPACE}"
 
-python manage.py list-profiles
-python manage.py describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
-python manage.py validate
-python manage.py render
-python manage.py deploy
-python manage.py status
+vllm-stack list-profiles
+vllm-stack describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
+vllm-stack validate
+vllm-stack render
+vllm-stack deploy
+vllm-stack status
 ```
 
 ### Current live workaround for the single-GPU example
@@ -554,7 +567,7 @@ kubectl -n "${KUBEAI_NAMESPACE}" patch model qwen2-5-7b-instruct-turbo-default -
 kubectl -n "${KUBEAI_NAMESPACE}" delete pod -l model=qwen2-5-7b-instruct-turbo-default
 ```
 
-If you run `python manage.py render` or `python manage.py deploy` again on the current repo version, re-apply this live patch.
+If you run `vllm-stack render` or `vllm-stack deploy` again on the current repo version, re-apply this live patch.
 
 ---
 
@@ -563,15 +576,15 @@ If you run `python manage.py render` or `python manage.py deploy` again on the c
 On a 4-GPU host, do the same **single-GPU smoke test first** to verify the cluster, KubeAI, runtime class, and model plumbing. That exact sequence worked on a 4-GPU machine during bring-up.
 
 ```bash
-python manage.py setup \
+vllm-stack setup \
   --backend kubeai \
   --profile qwen2-5-7b-instruct-turbo-default \
   --namespace "${KUBEAI_NAMESPACE}"
 
-python manage.py validate
-python manage.py render
-python manage.py deploy
-python manage.py status
+vllm-stack validate
+vllm-stack render
+vllm-stack deploy
+vllm-stack status
 
 kubectl -n "${KUBEAI_NAMESPACE}" patch model qwen2-5-7b-instruct-turbo-default --type merge -p '{
   "spec": {
@@ -621,7 +634,7 @@ If that works, the KubeAI front door is alive.
 ### Then try the smoke test
 
 ```bash
-python manage.py smoke-test \
+vllm-stack smoke-test \
   --base-url http://127.0.0.1:8000/openai/v1 \
   --model qwen2-5-7b-instruct-turbo-default
 ```

@@ -1,6 +1,25 @@
+"""scriptconfig-based CLI for vllm-stack.
+
+Each subcommand is a ``scfg.DataConfig`` subclass; ``ManageCLI`` composes
+them into a single ``scfg.ModalCLI`` exposed as the ``vllm-stack`` entry
+point. Because every subcommand is a ``DataConfig``, the same class can
+be invoked from the shell (``vllm-stack render --profile X``) or from
+Python (``RenderCLI.main(argv=False, profile='X')``).
+
+Layout:
+* Path / config helpers (config_path, generated_dir, runtime_*).
+* Override resolution (apply_config_overrides, has_runtime_overrides,
+  effective_allow_unsupported, effective_inventory, config_for_runtime).
+* Planning helpers (build_plan, save_plan, ensure_renderable,
+  render_is_stale).
+* Backend-specific helpers (_compose_base_cmd, _kubeai_stub,
+  _compose_up_with_router_recreate, _maybe_rerender).
+* DataConfig mixins for override flags shared across subcommands.
+* Per-command DataConfig classes, grouped by topic.
+* ``ManageCLI`` ModalCLI and ``main`` entry point.
+"""
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import subprocess
@@ -9,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import scriptconfig as scfg
 
 from .catalog import PROFILE_NAME_ALIASES, profile_summary
 from .benchmark import run_benchmark
@@ -48,6 +68,11 @@ from .validator import validate_resolved
 from .verification import verify_profile
 
 
+# ---------------------------------------------------------------------------
+# Path / config helpers
+# ---------------------------------------------------------------------------
+
+
 def config_path() -> Path:
     return config_root() / CONFIG_FILE
 
@@ -72,12 +97,7 @@ def plan_path(cfg: dict[str, Any] | None = None) -> Path:
 
 
 def _safe_load_config() -> dict[str, Any]:
-    """Load config.yaml if present; otherwise return defaults.
-
-    Used by helpers that may run before a config exists (e.g. ``cmd_init``
-    or ``cmd_explain --file <path>``). Callers that already have a cfg in
-    hand should pass it explicitly to avoid redundant disk reads.
-    """
+    """Load config.yaml if present; otherwise return defaults."""
     path = config_path()
     if path.exists():
         return load_yaml(path)
@@ -93,6 +113,34 @@ def load_config() -> dict[str, Any]:
             f"or point ${CONFIG_DIR_ENV} / --config-dir at an existing config."
         )
     return load_yaml(path)
+
+
+def runtime_dir_for_config(cfg: dict[str, Any]) -> Path:
+    state = cfg.get("state", {})
+    runtime = state.get("runtime")
+    if not runtime:
+        return data_root() / "runtime"
+    p = Path(runtime)
+    if p.is_absolute():
+        return p
+    return data_root() / p
+
+
+def runtime_env_path(cfg: dict[str, Any]) -> Path:
+    return generated_dir(cfg) / ".env"
+
+
+def runtime_litellm_config_path(cfg: dict[str, Any]) -> Path:
+    return runtime_dir_for_config(cfg) / "litellm_config.yaml"
+
+
+def backend_name(cfg: dict[str, Any]) -> str:
+    return str(cfg.get("backend", "compose")).lower()
+
+
+# ---------------------------------------------------------------------------
+# Env-var / override resolution
+# ---------------------------------------------------------------------------
 
 
 def _env_text(name: str) -> str | None:
@@ -125,11 +173,29 @@ def _env_int(name: str) -> int | None:
         raise SystemExit(f"Invalid integer value for {name}: {value!r}") from ex
 
 
-def _arg_or_env(args: argparse.Namespace, attr: str, env_name: str, *, caster=None):
-    if hasattr(args, attr):
-        value = getattr(args, attr)
-        if value is not None:
-            return value
+def _as_mapping(args: Any) -> dict[str, Any]:
+    """Coerce a CLI args object into a plain dict.
+
+    Works for ``None``, ``argparse.Namespace``, and ``scfg.DataConfig``
+    instances. Used to side-step name clashes between user-declared fields
+    and ``DataConfig`` builtins (e.g. ``namespace`` is a property on the
+    base class; ``getattr(cfg, 'namespace')`` returns the property, not the
+    field value, while ``asdict()['namespace']`` returns the field value).
+    """
+    if args is None:
+        return {}
+    if hasattr(args, "asdict"):
+        return dict(args.asdict())
+    if hasattr(args, "__dict__"):
+        return dict(vars(args))
+    return dict(args)
+
+
+def _arg_or_env(args_dict: dict[str, Any], attr: str, env_name: str, *, caster=None):
+    """Look up ``attr`` in the args dict, falling back to env var ``env_name``."""
+    value = args_dict.get(attr)
+    if value is not None:
+        return value
     env_value = _env_text(env_name)
     if env_value is None:
         return None
@@ -152,9 +218,15 @@ def _configured_state_paths(state_root: str) -> dict[str, str]:
     }
 
 
-def apply_config_overrides(cfg: dict[str, Any], args: argparse.Namespace | None) -> dict[str, Any]:
+def apply_config_overrides(cfg: dict[str, Any], args: Any | None) -> dict[str, Any]:
+    """Merge runtime overrides (CLI args + env vars) on top of ``cfg``.
+
+    ``args`` may be an ``argparse.Namespace``, a ``scfg.DataConfig`` instance,
+    or any mapping; it is coerced to a plain dict via ``_as_mapping``.
+    """
     if args is None:
         return deepcopy(cfg)
+    overrides = _as_mapping(args)
     out = deepcopy(cfg)
     out.setdefault("runtime", {})
     out.setdefault("ports", {})
@@ -163,62 +235,59 @@ def apply_config_overrides(cfg: dict[str, Any], args: argparse.Namespace | None)
     out.setdefault("cluster", {})
     out["cluster"].setdefault("ingress", {})
 
-    backend = _arg_or_env(args, "backend", "VLLM_SERVICE_BACKEND")
+    backend = _arg_or_env(overrides, "backend", "VLLM_SERVICE_BACKEND")
     if backend:
         out["backend"] = backend
 
-    profile = _arg_or_env(args, "profile", "VLLM_SERVICE_PROFILE")
+    profile = _arg_or_env(overrides, "profile", "VLLM_SERVICE_PROFILE")
     if profile:
         out["active_profile"] = profile
 
-    compose_cmd = _arg_or_env(args, "compose_cmd", "VLLM_SERVICE_COMPOSE_CMD")
+    compose_cmd = _arg_or_env(overrides, "compose_cmd", "VLLM_SERVICE_COMPOSE_CMD")
     if compose_cmd:
         out["runtime"]["compose_cmd"] = compose_cmd
 
-    litellm_port = getattr(args, "litellm_port", None)
+    litellm_port = overrides.get("litellm_port")
     if litellm_port is None:
         litellm_port = _env_int("VLLM_SERVICE_LITELLM_PORT")
     if litellm_port is not None:
         out["ports"]["litellm"] = litellm_port
 
-    open_webui_port = getattr(args, "open_webui_port", None)
+    open_webui_port = overrides.get("open_webui_port")
     if open_webui_port is None:
         open_webui_port = _env_int("VLLM_SERVICE_OPEN_WEBUI_PORT")
     if open_webui_port is not None:
         out["ports"]["open_webui"] = open_webui_port
 
-    postgres_port = getattr(args, "postgres_port", None)
+    postgres_port = overrides.get("postgres_port")
     if postgres_port is None:
         postgres_port = _env_int("VLLM_SERVICE_POSTGRES_PORT")
     if postgres_port is not None:
         out["ports"]["postgres"] = postgres_port
 
-    state_root = _arg_or_env(args, "state_root", "VLLM_SERVICE_STATE_ROOT")
+    state_root = _arg_or_env(overrides, "state_root", "VLLM_SERVICE_STATE_ROOT")
     if state_root:
         out["state"].update(_configured_state_paths(state_root))
 
-    runtime_dir = _arg_or_env(args, "runtime_dir", "VLLM_SERVICE_RUNTIME_DIR")
+    runtime_dir = _arg_or_env(overrides, "runtime_dir", "VLLM_SERVICE_RUNTIME_DIR")
     if runtime_dir:
         out["state"]["runtime"] = runtime_dir
 
-    generated_dir_override = _arg_or_env(args, "generated_dir", "VLLM_SERVICE_GENERATED_DIR")
+    generated_dir_override = _arg_or_env(overrides, "generated_dir", "VLLM_SERVICE_GENERATED_DIR")
     if generated_dir_override:
         out["output"]["generated_dir"] = generated_dir_override
     elif not out["output"].get("generated_dir"):
-        # Older configs predate the ``output`` section; populate it so the
-        # resolved path is visible/editable in config.yaml instead of being
-        # silently picked up from defaults each run.
         out["output"]["generated_dir"] = default_output_config()["generated_dir"]
 
-    namespace = _arg_or_env(args, "namespace", "VLLM_SERVICE_NAMESPACE")
+    namespace = _arg_or_env(overrides, "namespace", "VLLM_SERVICE_NAMESPACE")
     if namespace:
         out["cluster"]["namespace"] = namespace
 
-    ingress_host = _arg_or_env(args, "ingress_host", "VLLM_SERVICE_INGRESS_HOST")
+    ingress_host = _arg_or_env(overrides, "ingress_host", "VLLM_SERVICE_INGRESS_HOST")
     if ingress_host:
         out["cluster"]["ingress"]["host"] = ingress_host
 
-    ingress_enabled = getattr(args, "ingress_enabled", None)
+    ingress_enabled = overrides.get("ingress_enabled")
     if ingress_enabled is None:
         ingress_enabled = _env_bool("VLLM_SERVICE_INGRESS_ENABLED")
     if ingress_enabled is not None:
@@ -227,43 +296,59 @@ def apply_config_overrides(cfg: dict[str, Any], args: argparse.Namespace | None)
     return out
 
 
-def runtime_dir_for_config(cfg: dict[str, Any]) -> Path:
-    state = cfg.get("state", {})
-    runtime = state.get("runtime")
-    if not runtime:
-        return data_root() / "runtime"
-    p = Path(runtime)
-    if p.is_absolute():
-        return p
-    return data_root() / p
+_OVERRIDE_ATTRS = (
+    "profile",
+    "backend",
+    "compose_cmd",
+    "litellm_port",
+    "open_webui_port",
+    "postgres_port",
+    "namespace",
+    "ingress_host",
+    "ingress_enabled",
+    "simulate_hardware",
+    "generated_dir",
+)
+
+_OVERRIDE_ENVS = (
+    "VLLM_SERVICE_BACKEND",
+    "VLLM_SERVICE_PROFILE",
+    "VLLM_SERVICE_COMPOSE_CMD",
+    "VLLM_SERVICE_LITELLM_PORT",
+    "VLLM_SERVICE_OPEN_WEBUI_PORT",
+    "VLLM_SERVICE_POSTGRES_PORT",
+    "VLLM_SERVICE_NAMESPACE",
+    "VLLM_SERVICE_INGRESS_HOST",
+    "VLLM_SERVICE_INGRESS_ENABLED",
+    "VLLM_SERVICE_GENERATED_DIR",
+)
 
 
-def runtime_env_path(cfg: dict[str, Any]) -> Path:
-    return generated_dir(cfg) / ".env"
+def has_runtime_overrides(args: Any | None) -> bool:
+    if args is None:
+        return False
+    overrides = _as_mapping(args)
+    if any(overrides.get(attr) is not None for attr in _OVERRIDE_ATTRS):
+        return True
+    return any(_env_text(name) is not None for name in _OVERRIDE_ENVS)
 
 
-def runtime_litellm_config_path(cfg: dict[str, Any]) -> Path:
-    return runtime_dir_for_config(cfg) / "litellm_config.yaml"
-
-
-def effective_allow_unsupported(args: argparse.Namespace | None, cfg: dict[str, Any]) -> bool:
-    arg_value = bool(getattr(args, "allow_unsupported", False)) if args is not None else False
+def effective_allow_unsupported(args: Any | None, cfg: dict[str, Any]) -> bool:
+    overrides = _as_mapping(args)
+    arg_value = bool(overrides.get("allow_unsupported"))
     policy_value = bool(cfg.get("policy", {}).get("allow_unsupported_render", False))
     return arg_value or policy_value
 
 
-def effective_inventory(args: argparse.Namespace | None) -> dict[str, Any] | None:
-    spec = getattr(args, "simulate_hardware", None) if args is not None else None
+def effective_inventory(args: Any | None) -> dict[str, Any] | None:
+    overrides = _as_mapping(args)
+    spec = overrides.get("simulate_hardware")
     if not spec:
         return None
     return simulate_inventory(spec)
 
 
-def backend_name(cfg: dict[str, Any]) -> str:
-    return str(cfg.get("backend", "compose")).lower()
-
-
-def config_for_runtime(args: argparse.Namespace | None, *, allow_missing: bool = False) -> dict[str, Any]:
+def config_for_runtime(args: Any | None, *, allow_missing: bool = False) -> dict[str, Any]:
     if config_path().exists():
         cfg = load_yaml(config_path())
     elif allow_missing:
@@ -277,37 +362,9 @@ def config_for_runtime(args: argparse.Namespace | None, *, allow_missing: bool =
     return apply_config_overrides(cfg, args)
 
 
-def has_runtime_overrides(args: argparse.Namespace | None) -> bool:
-    if args is None:
-        return False
-    attrs = [
-        "profile",
-        "backend",
-        "compose_cmd",
-        "litellm_port",
-        "open_webui_port",
-        "postgres_port",
-        "namespace",
-        "ingress_host",
-        "ingress_enabled",
-        "simulate_hardware",
-        "generated_dir",
-    ]
-    if any(hasattr(args, attr) and getattr(args, attr) is not None for attr in attrs):
-        return True
-    env_names = [
-        "VLLM_SERVICE_BACKEND",
-        "VLLM_SERVICE_PROFILE",
-        "VLLM_SERVICE_COMPOSE_CMD",
-        "VLLM_SERVICE_LITELLM_PORT",
-        "VLLM_SERVICE_OPEN_WEBUI_PORT",
-        "VLLM_SERVICE_POSTGRES_PORT",
-        "VLLM_SERVICE_NAMESPACE",
-        "VLLM_SERVICE_INGRESS_HOST",
-        "VLLM_SERVICE_INGRESS_ENABLED",
-        "VLLM_SERVICE_GENERATED_DIR",
-    ]
-    return any(_env_text(name) is not None for name in env_names)
+# ---------------------------------------------------------------------------
+# Plan helpers
+# ---------------------------------------------------------------------------
 
 
 def build_plan(
@@ -381,419 +438,17 @@ def render_is_stale(cfg: dict[str, Any] | None = None) -> bool:
     return False
 
 
-def cmd_init(args: argparse.Namespace) -> int:
-    cfg_path = config_path()
-    if cfg_path.exists() and not args.force:
-        raise SystemExit("config.yaml already exists. Use --force to overwrite.")
-    save_yaml(cfg_path, initial_config())
-    if not models_path().exists():
-        save_yaml(models_path(), {"models": {}, "profiles": {}})
-    print(f"Wrote {cfg_path}")
-    return 0
-
-
-def cmd_setup(args: argparse.Namespace) -> int:
-    cfg_path = config_path()
-    if cfg_path.exists() and not args.reset:
-        cfg = load_yaml(cfg_path)
-    else:
-        cfg = initial_config()
-    cfg = apply_config_overrides(cfg, args)
-    save_yaml(cfg_path, cfg)
-    if not models_path().exists():
-        save_yaml(models_path(), {"models": {}, "profiles": {}})
-    if getattr(args, "resource_profiles_file", None):
-        # User-supplied path: anchor on the user's current working directory
-        # so ``--resource-profiles-file ./values.yaml`` behaves as typed.
-        source = Path(args.resource_profiles_file)
-        if not source.is_absolute():
-            source = Path.cwd() / source
-        values_doc = load_yaml(source)
-        if "resourceProfiles" not in values_doc:
-            raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
-        target = save_kubeai_resource_profiles(values_doc)
-        if plan_path(cfg).exists():
-            plan_path(cfg).unlink()
-        print(f"Wrote {target}")
-    print(f"Wrote {cfg_path}")
-    print(
-        f"Configured backend={cfg.get('backend', 'compose')} "
-        f"active_profile={cfg.get('active_profile', '') or '<unset>'}"
-    )
-    return 0
-
-
-def cmd_resolve(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    plan = build_plan(
-        cfg,
-        profile_name=args.profile,
-        allow_unsupported=effective_allow_unsupported(args, cfg),
-        inventory=effective_inventory(args),
-    )
-    save_plan(plan, cfg)
-    print(json.dumps(plan["deployment"], indent=2))
-    return 0
-
-
-def cmd_validate(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    plan = build_plan(
-        cfg,
-        profile_name=getattr(args, "profile", None),
-        allow_unsupported=effective_allow_unsupported(args, cfg),
-        inventory=effective_inventory(args),
-    )
-    save_plan(plan, cfg)
-    print(json.dumps(plan["validated"], indent=2))
-    return 0 if plan["validated"]["ok"] else 2
-
-
-def cmd_lock(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    plan = build_plan(
-        cfg,
-        profile_name=getattr(args, "profile", None),
-        allow_unsupported=effective_allow_unsupported(args, cfg),
-        inventory=effective_inventory(args),
-    )
-    if not plan["validated"]["ok"] and not plan["allow_unsupported"]:
-        raise SystemExit(
-            "Refusing to write plan.yaml because validation failed. Use --allow-unsupported to override."
-        )
-    save_plan(plan, cfg)
-    print(json.dumps(plan, indent=2))
-    return 0
-
-
-def cmd_render(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    plan = build_plan(
-        cfg,
-        profile_name=getattr(args, "profile", None),
-        allow_unsupported=effective_allow_unsupported(args, cfg),
-        inventory=effective_inventory(args),
-    )
-    ensure_renderable(plan)
-    save_plan(plan, cfg)
-    render_from_lock(plan, assume_yes=bool(getattr(args, "yes", False)))
-    print(f"Wrote {plan_path(cfg)}")
-    if backend_name(cfg) == "kubeai":
-        print(f"Rendered KubeAI artifacts into {kubeai_generated_dir(cfg)}")
-    else:
-        print(f"Rendered Compose into {generated_dir(cfg)}")
-        print(f"Rendered mounted runtime files into {runtime_dir_for_config(cfg)}")
-    return 0
-
-
-def cmd_up(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        raise SystemExit("`up` only supports the compose backend. Use `deploy` for kubeai.")
-    if has_runtime_overrides(args) or render_is_stale(cfg):
-        render_args = argparse.Namespace(
-            profile=getattr(args, "profile", None),
-            backend=getattr(args, "backend", None),
-            compose_cmd=getattr(args, "compose_cmd", None),
-            litellm_port=getattr(args, "litellm_port", None),
-            namespace=getattr(args, "namespace", None),
-            ingress_host=getattr(args, "ingress_host", None),
-            ingress_enabled=getattr(args, "ingress_enabled", None),
-            generated_dir=getattr(args, "generated_dir", None),
-            allow_unsupported=effective_allow_unsupported(args, cfg),
-            simulate_hardware=getattr(args, "simulate_hardware", None),
-            yes=bool(getattr(args, "yes", False)),
-        )
-        cmd_render(render_args)
-    compose_file = generated_dir(cfg) / "docker-compose.yml"
-    env_file = generated_dir(cfg) / ".env"
-    # TODO: today we recreate litellm + open-webui wholesale on any apply.
-    # That's correct but coarse — every active chat sees a brief router
-    # blip even when only one of several vLLM services actually changed.
-    # A finer design would diff the new router config against the running
-    # one and use LiteLLM's admin API (/model/new, /model/delete) to
-    # add/drop just the affected aliases, leaving unaffected models
-    # serving traffic uninterrupted. Open WebUI's dropdown would still
-    # need a re-fetch, but that can be done without a container recreate.
-    # Worth doing once we have a multi-model deployment where users would
-    # notice the blip.
-    try:
-        compose_up(
-            cfg["runtime"]["compose_cmd"],
-            compose_file,
-            env_file,
-            detach=args.detach,
-            remove_orphans=True,
-        )
-    finally:
-        if args.detach:
-            # Always force-recreate the router and UI so they re-read the
-            # rendered alias list. In `finally` so it still runs when
-            # compose_up raises (e.g. a vLLM healthcheck times out before
-            # litellm's `depends_on: service_healthy` gate releases) —
-            # that was the failure mode that left a stale model list
-            # advertised on /v1/models after a profile switch.
-            compose_recreate_router(
-                cfg["runtime"]["compose_cmd"],
-                compose_file,
-                env_file,
-                detach=True,
-            )
-    return 0
-
-
-def cmd_down(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        raise SystemExit("`down` only supports the compose backend.")
-    compose_down(cfg["runtime"]["compose_cmd"], generated_dir(cfg) / "docker-compose.yml", runtime_env_path(cfg))
-    return 0
-
-
-def cmd_switch(args: argparse.Namespace) -> int:
-    persisted_cfg = load_config()
-    persisted_cfg["active_profile"] = args.profile
-    save_yaml(config_path(), persisted_cfg)
-    cfg = apply_config_overrides(persisted_cfg, args)
-
-    plan = build_plan(
-        cfg,
-        profile_name=args.profile,
-        allow_unsupported=effective_allow_unsupported(args, cfg),
-        inventory=effective_inventory(args),
-    )
-    ensure_renderable(plan)
-    save_plan(plan, cfg)
-    render_from_lock(plan, assume_yes=bool(getattr(args, "yes", False)))
-    if args.apply:
-        if backend_name(cfg) == "compose":
-            compose_file = generated_dir(cfg) / "docker-compose.yml"
-            env_file = generated_dir(cfg) / ".env"
-            # TODO: this recreates litellm + open-webui wholesale, which
-            # interrupts every model — even ones that didn't change between
-            # profiles. A nicer future design would diff the new router
-            # config against the running one and use LiteLLM's admin API
-            # (/model/new, /model/delete) to add/drop just the affected
-            # aliases, leaving unaffected vLLM services serving traffic the
-            # whole time. Open WebUI's dropdown would still need a refresh,
-            # but that can be done without a container restart. Worth doing
-            # once we routinely run multi-model profiles where the blip is
-            # user-visible.
-            try:
-                # Bring the stack up convergently. --remove-orphans drops
-                # vLLM services no longer in the rendered compose file. We
-                # never run `down -v` or anything that would touch the
-                # Postgres/Open WebUI volumes.
-                compose_up(
-                    cfg["runtime"]["compose_cmd"],
-                    compose_file,
-                    env_file,
-                    detach=True,
-                    remove_orphans=True,
-                )
-            finally:
-                # Always recreate litellm + open-webui so they re-read the
-                # new alias list. We used to gate this on a byte-diff of
-                # the rendered litellm_config.yaml, but that left a stale
-                # model list when compose_up raised before the diff ran
-                # (e.g. litellm's `depends_on: service_healthy` on a slow
-                # vLLM service tripping the up timeout). `finally` makes
-                # this fire regardless. Persistent volumes are untouched.
-                compose_recreate_router(
-                    cfg["runtime"]["compose_cmd"],
-                    compose_file,
-                    env_file,
-                    detach=True,
-                )
-        else:
-            deploy_rendered_artifacts(plan["deployment"])
-    print(f"Switched active_profile to {args.profile}")
-    return 0
-
-
-def cmd_list_models(args: argparse.Namespace) -> int:
-    cfg = load_config() if config_path().exists() else initial_config()
-    cats = normalized_catalogs(cfg)
-    for name, model in cats.get("models", {}).items():
-        ref = model.get("hf_model_id") or model.get("url", "")
-        print(f"{name}: {ref}")
-    return 0
-
-
-def cmd_list_profiles(args: argparse.Namespace) -> int:
-    cfg = load_config() if config_path().exists() else initial_config()
-    cats = normalized_catalogs(cfg)
-    profiles = cats.get("profiles", {})
-    hidden_legacy = set(PROFILE_NAME_ALIASES)
-    for name, profile in profiles.items():
-        if name in hidden_legacy:
-            continue
-        if profile.get("kind") == "invalid-profile":
-            continue
-        summary = profile_summary(profile)
-        print(
-            f"{name}: public={summary['public_name']} logical={summary['logical_model_name']} "
-            f"protocol={summary['protocol_mode']} base_model={summary['base_model']}"
-        )
-    return 0
-
-
-def cmd_explain(args: argparse.Namespace) -> int:
-    if args.file:
-        # User-supplied path: anchor on the user's current working directory.
-        target = Path(args.file)
-        if not target.is_absolute():
-            target = Path.cwd() / target
-    else:
-        target = plan_path()
-    if not target.exists():
-        raise SystemExit(f"Missing file: {target}")
-    print(json.dumps(load_yaml(target), indent=2))
-    return 0
-
-
-def _print_structured(data: dict[str, Any], fmt: str, output: str | None) -> int:
-    if fmt == "yaml":
-        import yaml
-
-        text = yaml.safe_dump(data, sort_keys=False)
-    else:
-        text = json.dumps(data, indent=2)
-    if output:
-        target = Path(output)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text + ("" if text.endswith("\n") else "\n"), encoding="utf-8")
-        print(f"Wrote {target}")
-        return 0
-    print(text)
-    return 0
-
-
-def cmd_describe_profile(args: argparse.Namespace) -> int:
-    contract = load_profile_contract(
-        args.profile,
-        backend=_arg_or_env(args, "backend", "VLLM_SERVICE_BACKEND"),
-        simulate_hardware_spec=getattr(args, "simulate_hardware", None),
-    )
-    return _print_structured(contract, args.format, args.output)
-
-
-def _cmd_export_bundle(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    plan = build_plan(
-        cfg,
-        profile_name=args.profile,
-        allow_unsupported=effective_allow_unsupported(args, cfg),
-        inventory=effective_inventory(args),
-    )
-    ensure_renderable(plan)
-    print(
-        "Benchmark bundle export here is transitional; prefer the helm_audit "
-        "integration layer for CRFM HELM bundle generation."
-    )
-    output_dir = None
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-        if not output_dir.is_absolute():
-            output_dir = Path.cwd() / output_dir
-    result = export_benchmark_bundle(
-        plan["deployment"],
-        base_url=args.base_url,
-        output_dir=output_dir,
-    )
-    print(f"Wrote {result['bundle_path']}")
-    print(f"Wrote {result['model_deployments_path']}")
-    return 0
-
-
-def cmd_export_benchmark_bundle(args: argparse.Namespace) -> int:
-    return _cmd_export_bundle(args)
-
-
-def cmd_export_helm_bundle(args: argparse.Namespace) -> int:
-    return _cmd_export_bundle(args)
-
-
-def cmd_verify_profile(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    plan = build_plan(
-        cfg,
-        profile_name=args.profile,
-        allow_unsupported=effective_allow_unsupported(args, cfg),
-        inventory=effective_inventory(args),
-    )
-    result = verify_profile(plan["deployment"])
-    print(json.dumps(result, indent=2))
-    return 0 if result["ok"] else 2
-
-
-def cmd_benchmark(args: argparse.Namespace) -> int:
-    # benchmark_prompts.json is a user-supplied fixture. Look for it first in
-    # the config dir, then fall back to the CWD so an ad-hoc invocation
-    # ``vllm-stack benchmark`` from a checkout still picks up a sibling file.
-    prompts_path = config_root() / "benchmark_prompts.json"
-    if not prompts_path.exists():
-        prompts_path = Path.cwd() / "benchmark_prompts.json"
-    if not prompts_path.exists():
-        raise SystemExit(
-            f"benchmark_prompts.json not found at {config_root() / 'benchmark_prompts.json'} "
-            f"or {Path.cwd() / 'benchmark_prompts.json'}"
-        )
-    prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
-    cfg = config_for_runtime(args)
-    env = parse_env_file(runtime_env_path(cfg))
-    base_url = args.base_url or f"http://127.0.0.1:{cfg['ports']['litellm']}/v1"
-    api_key = args.api_key or env.get("LITELLM_MASTER_KEY", "")
-    data = run_benchmark(base_url, api_key, args.model, prompts)
-    print(json.dumps(data, indent=2))
-    return 0
-
-
-def cmd_deploy(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if has_runtime_overrides(args) or render_is_stale(cfg):
-        render_args = argparse.Namespace(
-            profile=getattr(args, "profile", None),
-            backend=getattr(args, "backend", None),
-            compose_cmd=getattr(args, "compose_cmd", None),
-            litellm_port=getattr(args, "litellm_port", None),
-            namespace=getattr(args, "namespace", None),
-            ingress_host=getattr(args, "ingress_host", None),
-            ingress_enabled=getattr(args, "ingress_enabled", None),
-            generated_dir=getattr(args, "generated_dir", None),
-            allow_unsupported=effective_allow_unsupported(args, cfg),
-            simulate_hardware=getattr(args, "simulate_hardware", None),
-            yes=bool(getattr(args, "yes", False)),
-        )
-        cmd_render(render_args)
-    if backend_name(cfg) == "kubeai":
-        plan = load_yaml(plan_path(cfg))
-        try:
-            deploy_rendered_artifacts(plan["deployment"])
-        except CommandError as ex:
-            namespace = cfg.get("cluster", {}).get("namespace", "kubeai")
-            raise SystemExit(
-                f"Failed to deploy to namespace {namespace!r}. Confirm `python manage.py setup --backend kubeai --namespace {namespace}` "
-                "matches the namespace where the KubeAI Helm release is installed.\n"
-                f"Original error: {ex}"
-            ) from ex
-        return 0
-    compose_up(
-        cfg["runtime"]["compose_cmd"],
-        generated_dir(cfg) / "docker-compose.yml",
-        generated_dir(cfg) / ".env",
-        detach=args.detach,
-        remove_orphans=True,
-    )
-    return 0
+# ---------------------------------------------------------------------------
+# Backend-specific helpers
+# ---------------------------------------------------------------------------
 
 
 def _compose_base_cmd(cfg: dict[str, Any]) -> list[str]:
     """Build the shared ``docker compose -f ... --env-file ...`` prefix.
 
-    Every compose-wrapper subcommand uses this so that the user doesn't
-    need to cd into the rendered-artifacts directory just to run a
-    one-shot ``ps`` / ``restart`` / ``exec`` / ``pull`` / ``logs``.
+    Used by every compose-wrapper subcommand so the user doesn't have to
+    cd into the rendered-artifacts directory just to run a one-shot
+    ``ps`` / ``restart`` / ``pull`` / ``logs``.
     """
     compose_file = generated_dir(cfg) / "docker-compose.yml"
     env_file = generated_dir(cfg) / ".env"
@@ -818,136 +473,918 @@ def _kubeai_stub(cmd_name: str) -> None:
     )
 
 
-def cmd_logs(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        _kubeai_stub("logs")
-    cmd = _compose_base_cmd(cfg) + ["logs"]
-    if getattr(args, "follow", False):
-        cmd.append("--follow")
-    tail = getattr(args, "tail", None)
-    if tail is not None:
-        cmd.extend(["--tail", str(tail)])
-    if getattr(args, "no_color", False):
-        cmd.append("--no-color")
-    if getattr(args, "timestamps", False):
-        cmd.append("--timestamps")
-    cmd.extend(getattr(args, "services", None) or [])
-    proc = subprocess.run(cmd)
-    return int(proc.returncode)
+def _compose_up_with_router_recreate(
+    cfg: dict[str, Any],
+    *,
+    detach: bool,
+) -> None:
+    """Run ``compose up`` and force-recreate litellm + open-webui afterwards.
+
+    A compose ``up`` against the rendered stack only restarts vLLM services
+    whose specs changed. LiteLLM and Open WebUI keep their existing
+    containers and would therefore serve stale model lists until something
+    else recreated them. Force-recreating them in a ``finally`` makes the
+    router refresh fire even when compose_up raises (the failure mode that
+    used to leave a stale model list advertised on ``/v1/models`` after a
+    profile switch).
+
+    A finer future design would diff the new router config against the
+    running one and use LiteLLM's admin API (``/model/new``,
+    ``/model/delete``) to add/drop only the affected aliases, leaving
+    unaffected vLLM services serving traffic uninterrupted. Worth doing
+    once a multi-model deployment makes the brief blip user-visible.
+    """
+    compose_file = generated_dir(cfg) / "docker-compose.yml"
+    env_file = generated_dir(cfg) / ".env"
+    try:
+        compose_up(
+            cfg["runtime"]["compose_cmd"],
+            compose_file,
+            env_file,
+            detach=detach,
+            remove_orphans=True,
+        )
+    finally:
+        if detach:
+            compose_recreate_router(
+                cfg["runtime"]["compose_cmd"],
+                compose_file,
+                env_file,
+                detach=True,
+            )
 
 
-def cmd_ps(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        _kubeai_stub("ps")
-    cmd = _compose_base_cmd(cfg) + ["ps"]
-    if getattr(args, "all", False):
-        cmd.append("--all")
-    if getattr(args, "services_only", False):
-        cmd.append("--services")
-    if getattr(args, "quiet", False):
-        cmd.append("--quiet")
-    cmd.extend(getattr(args, "services", None) or [])
-    proc = subprocess.run(cmd)
-    return int(proc.returncode)
+def _apply_path_overrides(config: Any) -> None:
+    """Honour ``--config-dir`` / ``--data-dir`` from a parsed subcommand config."""
+    overrides = _as_mapping(config)
+    if overrides.get("config_dir"):
+        set_config_root(overrides["config_dir"])
+    if overrides.get("data_dir"):
+        set_data_root(overrides["data_dir"])
 
 
-def cmd_restart(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        _kubeai_stub("restart")
-    cmd = _compose_base_cmd(cfg) + ["restart"]
-    timeout = getattr(args, "timeout", None)
-    if timeout is not None:
-        cmd.extend(["--timeout", str(timeout)])
-    cmd.extend(getattr(args, "services", None) or [])
-    proc = subprocess.run(cmd)
-    return int(proc.returncode)
+def _maybe_rerender(config: Any, cfg: dict[str, Any]) -> None:
+    """Re-run RenderCLI if runtime overrides changed or rendered outputs are stale.
+
+    Both ``up`` and ``deploy`` need this so the rendered artifacts always
+    match the current config + overrides before any container action.
+    """
+    if has_runtime_overrides(config) or render_is_stale(cfg):
+        overrides = _as_mapping(config)
+        RenderCLI.main(
+            argv=False,
+            profile=overrides.get("profile"),
+            backend=overrides.get("backend"),
+            compose_cmd=overrides.get("compose_cmd"),
+            litellm_port=overrides.get("litellm_port"),
+            open_webui_port=overrides.get("open_webui_port"),
+            postgres_port=overrides.get("postgres_port"),
+            namespace=overrides.get("namespace"),
+            ingress_host=overrides.get("ingress_host"),
+            ingress_enabled=overrides.get("ingress_enabled"),
+            generated_dir=overrides.get("generated_dir"),
+            allow_unsupported=bool(overrides.get("allow_unsupported")),
+            simulate_hardware=overrides.get("simulate_hardware"),
+            yes=bool(overrides.get("yes")),
+        )
 
 
-def cmd_pull(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        _kubeai_stub("pull")
-    cmd = _compose_base_cmd(cfg) + ["pull"]
-    if getattr(args, "quiet", False):
-        cmd.append("--quiet")
-    if getattr(args, "ignore_pull_failures", False):
-        cmd.append("--ignore-pull-failures")
-    cmd.extend(getattr(args, "services", None) or [])
-    proc = subprocess.run(cmd)
-    return int(proc.returncode)
+# ---------------------------------------------------------------------------
+# DataConfig mixins for common override flags
+# ---------------------------------------------------------------------------
 
 
-def cmd_start(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        _kubeai_stub("start")
-    cmd = _compose_base_cmd(cfg) + ["start"]
-    cmd.extend(getattr(args, "services", None) or [])
-    proc = subprocess.run(cmd)
-    return int(proc.returncode)
+class _PathOverridesMixin(scfg.DataConfig):
+    """Adds global ``--config-dir`` / ``--data-dir`` to a subcommand."""
+
+    config_dir = scfg.Value(
+        None,
+        type=str,
+        help=(
+            f"Directory containing config.yaml / models.yaml. Defaults to "
+            f"~/.config/vllm_service (XDG_CONFIG_HOME) or ${CONFIG_DIR_ENV} when set."
+        ),
+    )
+    data_dir = scfg.Value(
+        None,
+        type=str,
+        help=(
+            f"Directory for rendered artifacts and bind-mount state. Defaults to "
+            f"~/.cache/vllm_service (XDG_CACHE_HOME) or ${DATA_DIR_ENV} when set."
+        ),
+    )
 
 
-def cmd_stop(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) != "compose":
-        _kubeai_stub("stop")
-    cmd = _compose_base_cmd(cfg) + ["stop"]
-    timeout = getattr(args, "timeout", None)
-    if timeout is not None:
-        cmd.extend(["--timeout", str(timeout)])
-    cmd.extend(getattr(args, "services", None) or [])
-    proc = subprocess.run(cmd)
-    return int(proc.returncode)
+class _BackendOverrideMixin(scfg.DataConfig):
+    backend = scfg.Value(None, choices=["compose", "kubeai"], help="Active backend override.")
 
 
-def cmd_status(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    if backend_name(cfg) == "kubeai":
-        namespace = cfg.get("cluster", {}).get("namespace", "kubeai")
-        try:
-            kubeai_print_status(namespace)
-        except CommandError as ex:
-            raise SystemExit(
-                f"Failed to query KubeAI resources in namespace {namespace!r}. Confirm `python manage.py setup --backend kubeai --namespace {namespace}` "
-                "matches the namespace where the KubeAI Helm release is installed.\n"
-                f"Original error: {ex}"
-            ) from ex
+class _ComposeOverrideMixin(scfg.DataConfig):
+    compose_cmd = scfg.Value(None, type=str, help="Docker compose command override (e.g. 'podman compose').")
+
+
+class _ProfileOverrideMixin(scfg.DataConfig):
+    profile = scfg.Value(None, type=str, help="Active profile override (sets config.active_profile).")
+
+
+class _PortOverridesMixin(scfg.DataConfig):
+    litellm_port = scfg.Value(None, type=int)
+    open_webui_port = scfg.Value(None, type=int)
+    postgres_port = scfg.Value(None, type=int)
+
+
+class _ClusterOverridesMixin(scfg.DataConfig):
+    namespace = scfg.Value(None, type=str, help="Kubernetes namespace for kubeai deployments.")
+    ingress_host = scfg.Value(None, type=str, help="Ingress host (kubeai only).")
+    ingress_enabled = scfg.Value(
+        None,
+        isflag=True,
+        alias=["ingress"],
+        help="Enable cluster ingress (kubeai only); use --no-ingress to disable.",
+    )
+
+
+class _GeneratedDirOverrideMixin(scfg.DataConfig):
+    generated_dir = scfg.Value(
+        None,
+        type=str,
+        help=(
+            "Directory to write rendered artifacts (docker-compose.yml, .env, "
+            "plan.yaml, kubeai/*) into. Defaults to <data-dir>/generated. May "
+            "also be set via VLLM_SERVICE_GENERATED_DIR or output.generated_dir."
+        ),
+    )
+
+
+class _AllowUnsupportedMixin(scfg.DataConfig):
+    allow_unsupported = scfg.Value(False, isflag=True, help="Allow validation errors when planning/rendering.")
+
+
+class _SimulateHardwareMixin(scfg.DataConfig):
+    simulate_hardware = scfg.Value(
+        None,
+        type=str,
+        help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80). Useful for planning on smaller machines.",
+    )
+
+
+class _PlanOverridesCLI(
+    _PathOverridesMixin,
+    _ProfileOverrideMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+    _PortOverridesMixin,
+    _ClusterOverridesMixin,
+    _GeneratedDirOverrideMixin,
+    _AllowUnsupportedMixin,
+    _SimulateHardwareMixin,
+):
+    """Standard set of overrides for any command that builds a plan."""
+
+    pass
+
+
+class _SwitchPathOverridesCLI(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+    _PortOverridesMixin,
+    _ClusterOverridesMixin,
+    _AllowUnsupportedMixin,
+    _SimulateHardwareMixin,
+):
+    """Overrides for commands that take a positional ``profile`` (no --profile)."""
+
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Profile / config management commands
+# ---------------------------------------------------------------------------
+
+
+class InitCLI(_PathOverridesMixin):
+    """Write a fresh config.yaml + empty models.yaml under config_root()."""
+
+    force = scfg.Value(False, isflag=True, help="Overwrite an existing config.yaml.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg_path = config_path()
+        if cfg_path.exists() and not config.force:
+            raise SystemExit("config.yaml already exists. Use --force to overwrite.")
+        save_yaml(cfg_path, initial_config())
+        if not models_path().exists():
+            save_yaml(models_path(), {"models": {}, "profiles": {}})
+        print(f"Wrote {cfg_path}")
         return 0
-    proc = subprocess.run(_compose_base_cmd(cfg) + ["ps"])
-    return int(proc.returncode)
 
 
-def _infer_default_base_url(cfg: dict[str, Any], args: argparse.Namespace) -> str:
-    deployment = {"backend": backend_name(cfg), "cluster": cfg.get("cluster", {}), "ports": cfg.get("ports", {})}
-    return default_base_url(deployment, explicit=args.base_url)
+class SetupCLI(
+    _PathOverridesMixin,
+    _ProfileOverrideMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+    _PortOverridesMixin,
+    _ClusterOverridesMixin,
+    _GeneratedDirOverrideMixin,
+):
+    """Create / update config.yaml with the requested overrides applied."""
+
+    reset = scfg.Value(False, isflag=True, help="Start from default config values before applying overrides.")
+    state_root = scfg.Value(None, type=str, help="Base directory for state.* paths.")
+    runtime_dir = scfg.Value(None, type=str, help="Override state.runtime specifically.")
+    resource_profiles_file = scfg.Value(
+        None,
+        type=str,
+        help="For kubeai setups, sync a local Helm values file with resourceProfiles into kubeai-values.local.yaml.",
+    )
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg_path = config_path()
+        if cfg_path.exists() and not config.reset:
+            cfg = load_yaml(cfg_path)
+        else:
+            cfg = initial_config()
+        cfg = apply_config_overrides(cfg, config)
+        save_yaml(cfg_path, cfg)
+        if not models_path().exists():
+            save_yaml(models_path(), {"models": {}, "profiles": {}})
+        if config.resource_profiles_file:
+            # User-supplied path: anchor on CWD so a typed relative path
+            # behaves as the user expects.
+            source = Path(config.resource_profiles_file)
+            if not source.is_absolute():
+                source = Path.cwd() / source
+            values_doc = load_yaml(source)
+            if "resourceProfiles" not in values_doc:
+                raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
+            target = save_kubeai_resource_profiles(values_doc)
+            if plan_path(cfg).exists():
+                plan_path(cfg).unlink()
+            print(f"Wrote {target}")
+        print(f"Wrote {cfg_path}")
+        print(
+            f"Configured backend={cfg.get('backend', 'compose')} "
+            f"active_profile={cfg.get('active_profile', '') or '<unset>'}"
+        )
+        return 0
+
+
+class ResolveCLI(_PlanOverridesCLI):
+    """Resolve the active profile into a deployment dict and print it."""
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        plan = build_plan(
+            cfg,
+            profile_name=config.profile,
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
+        )
+        save_plan(plan, cfg)
+        print(json.dumps(plan["deployment"], indent=2))
+        return 0
+
+
+class ValidateCLI(_PlanOverridesCLI):
+    """Resolve + validate the active profile; exit non-zero on validation errors."""
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        plan = build_plan(
+            cfg,
+            profile_name=config.profile,
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
+        )
+        save_plan(plan, cfg)
+        print(json.dumps(plan["validated"], indent=2))
+        return 0 if plan["validated"]["ok"] else 2
+
+
+class LockCLI(_PlanOverridesCLI):
+    """Write plan.yaml after resolving + validating the active profile."""
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        plan = build_plan(
+            cfg,
+            profile_name=config.profile,
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
+        )
+        if not plan["validated"]["ok"] and not plan["allow_unsupported"]:
+            raise SystemExit(
+                "Refusing to write plan.yaml because validation failed. Use --allow-unsupported to override."
+            )
+        save_plan(plan, cfg)
+        print(json.dumps(plan, indent=2))
+        return 0
+
+
+class RenderCLI(_PlanOverridesCLI):
+    """Render the active profile's deployment into compose/kubeai artifacts."""
+
+    yes = scfg.Value(
+        False,
+        isflag=True,
+        short_alias=["y"],
+        help="Apply rendered changes without prompting. Without this, render shows a per-file diff and asks for confirmation.",
+    )
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        plan = build_plan(
+            cfg,
+            profile_name=config.profile,
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
+        )
+        ensure_renderable(plan)
+        save_plan(plan, cfg)
+        render_from_lock(plan, assume_yes=bool(config.yes))
+        print(f"Wrote {plan_path(cfg)}")
+        if backend_name(cfg) == "kubeai":
+            print(f"Rendered KubeAI artifacts into {kubeai_generated_dir(cfg)}")
+        else:
+            print(f"Rendered Compose into {generated_dir(cfg)}")
+            print(f"Rendered mounted runtime files into {runtime_dir_for_config(cfg)}")
+        return 0
+
+
+class SwitchCLI(_SwitchPathOverridesCLI):
+    """Persist a new active_profile and re-render (optionally re-applying)."""
+
+    profile = scfg.Value(None, type=str, position=1, help="Profile name to switch to.")
+    apply = scfg.Value(False, isflag=True, help="Also apply the new profile to the running stack.")
+    yes = scfg.Value(False, isflag=True, short_alias=["y"], help="Apply rendered changes without prompting.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        if not config.profile:
+            raise SystemExit("switch: missing required profile name")
+        persisted_cfg = load_config()
+        persisted_cfg["active_profile"] = config.profile
+        save_yaml(config_path(), persisted_cfg)
+        cfg = apply_config_overrides(persisted_cfg, config)
+
+        plan = build_plan(
+            cfg,
+            profile_name=config.profile,
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
+        )
+        ensure_renderable(plan)
+        save_plan(plan, cfg)
+        render_from_lock(plan, assume_yes=bool(config.yes))
+        if config.apply:
+            if backend_name(cfg) == "compose":
+                _compose_up_with_router_recreate(cfg, detach=True)
+            else:
+                deploy_rendered_artifacts(plan["deployment"])
+        print(f"Switched active_profile to {config.profile}")
+        return 0
+
+
+class ListModelsCLI(_PathOverridesMixin):
+    """Print every model in the merged catalog."""
+
+    __command__ = "list-models"
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = load_config() if config_path().exists() else initial_config()
+        cats = normalized_catalogs(cfg)
+        for name, model in cats.get("models", {}).items():
+            ref = model.get("hf_model_id") or model.get("url", "")
+            print(f"{name}: {ref}")
+        return 0
+
+
+class ListProfilesCLI(_PathOverridesMixin):
+    """Print every serving profile in the merged catalog."""
+
+    __command__ = "list-profiles"
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = load_config() if config_path().exists() else initial_config()
+        cats = normalized_catalogs(cfg)
+        profiles = cats.get("profiles", {})
+        hidden_legacy = set(PROFILE_NAME_ALIASES)
+        for name, profile in profiles.items():
+            if name in hidden_legacy:
+                continue
+            if profile.get("kind") == "invalid-profile":
+                continue
+            summary = profile_summary(profile)
+            print(
+                f"{name}: public={summary['public_name']} logical={summary['logical_model_name']} "
+                f"protocol={summary['protocol_mode']} base_model={summary['base_model']}"
+            )
+        return 0
+
+
+class ExplainCLI(_PathOverridesMixin):
+    """Pretty-print a YAML file (defaults to the current plan.yaml)."""
+
+    __command__ = "explain"
+
+    file = scfg.Value(None, type=str, help="Path to read (default: current plan.yaml).")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        if config.file:
+            target = Path(config.file)
+            if not target.is_absolute():
+                target = Path.cwd() / target
+        else:
+            target = plan_path()
+        if not target.exists():
+            raise SystemExit(f"Missing file: {target}")
+        print(json.dumps(load_yaml(target), indent=2))
+        return 0
+
+
+class DescribeProfileCLI(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+    _AllowUnsupportedMixin,
+    _SimulateHardwareMixin,
+):
+    """Print the profile contract for a given profile name."""
+
+    __command__ = "describe-profile"
+
+    profile = scfg.Value(None, type=str, position=1, help="Profile name to describe.")
+    format = scfg.Value("yaml", choices=["json", "yaml"])
+    output = scfg.Value(None, type=str, help="Write to this file instead of stdout.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        overrides = _as_mapping(config)
+        if not overrides.get("profile"):
+            raise SystemExit("describe-profile: missing required profile name")
+        contract = load_profile_contract(
+            overrides["profile"],
+            backend=_arg_or_env(overrides, "backend", "VLLM_SERVICE_BACKEND"),
+            simulate_hardware_spec=overrides.get("simulate_hardware"),
+        )
+        return _print_structured(contract, overrides["format"], overrides.get("output"))
+
+
+def _print_structured(data: dict[str, Any], fmt: str, output: str | None) -> int:
+    if fmt == "yaml":
+        import yaml
+
+        text = yaml.safe_dump(data, sort_keys=False)
+    else:
+        text = json.dumps(data, indent=2)
+    if output:
+        target = Path(output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text + ("" if text.endswith("\n") else "\n"), encoding="utf-8")
+        print(f"Wrote {target}")
+        return 0
+    print(text)
+    return 0
+
+
+class VerifyProfileCLI(_SwitchPathOverridesCLI):
+    """Sanity-check a resolved profile (post-render expectations)."""
+
+    __command__ = "verify-profile"
+
+    profile = scfg.Value(None, type=str, position=1, help="Profile name to verify.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        if not config.profile:
+            raise SystemExit("verify-profile: missing required profile name")
+        cfg = config_for_runtime(config)
+        plan = build_plan(
+            cfg,
+            profile_name=config.profile,
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
+        )
+        result = verify_profile(plan["deployment"])
+        print(json.dumps(result, indent=2))
+        return 0 if result["ok"] else 2
+
+
+class KubeaiSyncResourceProfilesCLI(_PathOverridesMixin):
+    """Pull a Helm ``resourceProfiles`` values file into kubeai-values.local.yaml."""
+
+    __command__ = "kubeai-sync-resource-profiles"
+
+    from_file = scfg.Value(None, type=str, required=True, help="Helm values file with a top-level resourceProfiles map.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config, allow_missing=True)
+        # User-supplied path: anchor on CWD.
+        source = Path(config.from_file)
+        if not source.is_absolute():
+            source = Path.cwd() / source
+        values_doc = load_yaml(source)
+        if "resourceProfiles" not in values_doc:
+            raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
+        target = save_kubeai_resource_profiles(values_doc)
+        if plan_path(cfg).exists():
+            plan_path(cfg).unlink()
+        profiles, _, _ = load_kubeai_resource_profiles()
+        print(f"Wrote {target}")
+        print(f"Synced {len(profiles)} KubeAI resource profile(s)")
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Export / bundle commands (transitional; helm_audit owns the canonical path)
+# ---------------------------------------------------------------------------
+
+
+class _ExportBundleCLI(_SwitchPathOverridesCLI):
+    """Shared body for ``export-benchmark-bundle`` / ``export-helm-bundle``."""
+
+    profile = scfg.Value(None, type=str, position=1, help="Profile name to export.")
+    base_url = scfg.Value(None, type=str)
+    output_dir = scfg.Value(None, type=str)
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        if not config.profile:
+            raise SystemExit(f"{cls.__command__}: missing required profile name")
+        cfg = config_for_runtime(config)
+        plan = build_plan(
+            cfg,
+            profile_name=config.profile,
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
+        )
+        ensure_renderable(plan)
+        print(
+            "Benchmark bundle export here is transitional; prefer the helm_audit "
+            "integration layer for CRFM HELM bundle generation."
+        )
+        output_dir = None
+        if config.output_dir:
+            output_dir = Path(config.output_dir)
+            if not output_dir.is_absolute():
+                output_dir = Path.cwd() / output_dir
+        result = export_benchmark_bundle(
+            plan["deployment"],
+            base_url=config.base_url,
+            output_dir=output_dir,
+        )
+        print(f"Wrote {result['bundle_path']}")
+        print(f"Wrote {result['model_deployments_path']}")
+        return 0
+
+
+class ExportBenchmarkBundleCLI(_ExportBundleCLI):
+    """Export a benchmark bundle (transitional; helm_audit owns the canonical path)."""
+
+    __command__ = "export-benchmark-bundle"
+
+
+class ExportHelmBundleCLI(_ExportBundleCLI):
+    """Alias of export-benchmark-bundle that emits the legacy helm/ layout."""
+
+    __command__ = "export-helm-bundle"
+
+
+# ---------------------------------------------------------------------------
+# Runtime commands
+# ---------------------------------------------------------------------------
+
+
+class UpCLI(_PlanOverridesCLI):
+    """Bring the rendered compose stack up. Re-renders first if anything changed."""
+
+    detach = scfg.Value(False, isflag=True, short_alias=["d"], help="Run in background instead of attaching to logs.")
+    yes = scfg.Value(False, isflag=True, short_alias=["y"], help="If `up` triggers a re-render, apply changes without prompting.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            raise SystemExit("`up` only supports the compose backend. Use `deploy` for kubeai.")
+        _maybe_rerender(config, cfg)
+        _compose_up_with_router_recreate(cfg, detach=bool(config.detach))
+        return 0
+
+
+class DownCLI(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+    _PortOverridesMixin,
+):
+    """Bring the rendered compose stack down (does not touch volumes)."""
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            raise SystemExit("`down` only supports the compose backend.")
+        compose_down(
+            cfg["runtime"]["compose_cmd"],
+            generated_dir(cfg) / "docker-compose.yml",
+            runtime_env_path(cfg),
+        )
+        return 0
+
+
+class DeployCLI(_PlanOverridesCLI):
+    """Apply the rendered stack to its backend (kubeai apply / compose up)."""
+
+    detach = scfg.Value(False, isflag=True, short_alias=["d"])
+    yes = scfg.Value(False, isflag=True, short_alias=["y"], help="If `deploy` triggers a re-render, apply changes without prompting.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        _maybe_rerender(config, cfg)
+        if backend_name(cfg) == "kubeai":
+            plan = load_yaml(plan_path(cfg))
+            try:
+                deploy_rendered_artifacts(plan["deployment"])
+            except CommandError as ex:
+                namespace = cfg.get("cluster", {}).get("namespace", "kubeai")
+                raise SystemExit(
+                    f"Failed to deploy to namespace {namespace!r}. Confirm "
+                    f"`vllm-stack setup --backend kubeai --namespace {namespace}` "
+                    "matches the namespace where the KubeAI Helm release is installed.\n"
+                    f"Original error: {ex}"
+                ) from ex
+            return 0
+        compose_up(
+            cfg["runtime"]["compose_cmd"],
+            generated_dir(cfg) / "docker-compose.yml",
+            generated_dir(cfg) / ".env",
+            detach=bool(config.detach),
+            remove_orphans=True,
+        )
+        return 0
+
+
+class StatusCLI(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+    _PortOverridesMixin,
+    _ClusterOverridesMixin,
+):
+    """Show the runtime status of the rendered stack."""
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) == "kubeai":
+            namespace = cfg.get("cluster", {}).get("namespace", "kubeai")
+            try:
+                kubeai_print_status(namespace)
+            except CommandError as ex:
+                raise SystemExit(
+                    f"Failed to query KubeAI resources in namespace {namespace!r}. Confirm "
+                    f"`vllm-stack setup --backend kubeai --namespace {namespace}` "
+                    "matches the namespace where the KubeAI Helm release is installed.\n"
+                    f"Original error: {ex}"
+                ) from ex
+            return 0
+        proc = subprocess.run(_compose_base_cmd(cfg) + ["ps"])
+        return int(proc.returncode)
+
+
+# ---------------------------------------------------------------------------
+# Compose day-2-ops wrappers (raise NotImplementedError on kubeai)
+# ---------------------------------------------------------------------------
+
+
+class _ComposeWrapperBase(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+):
+    """Common fields for ``docker compose <subcmd>`` wrappers."""
+
+    services = scfg.Value(None, nargs="*", position=1, help="Optional service names to filter (empty = all).")
+
+
+class LogsCLI(_ComposeWrapperBase):
+    """Tail rendered Compose service logs without typing the full docker compose path."""
+
+    follow = scfg.Value(False, isflag=True, short_alias=["f"], help="Stream logs (docker compose logs -f).")
+    tail = scfg.Value(None, type=str, help="Tail the last N lines (default: all). Pass a number or 'all'.")
+    timestamps = scfg.Value(False, isflag=True)
+    no_color = scfg.Value(False, isflag=True)
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            _kubeai_stub("logs")
+        cmd = _compose_base_cmd(cfg) + ["logs"]
+        if config.follow:
+            cmd.append("--follow")
+        if config.tail is not None:
+            cmd.extend(["--tail", str(config.tail)])
+        if config.no_color:
+            cmd.append("--no-color")
+        if config.timestamps:
+            cmd.append("--timestamps")
+        cmd.extend(config.services or [])
+        proc = subprocess.run(cmd)
+        return int(proc.returncode)
+
+
+class PsCLI(_ComposeWrapperBase):
+    """``docker compose ps`` for the rendered stack."""
+
+    all = scfg.Value(False, isflag=True, short_alias=["a"], help="Include stopped containers.")
+    services_only = scfg.Value(False, isflag=True, help="Print only service names (passes --services to docker compose).")
+    quiet = scfg.Value(False, isflag=True, short_alias=["q"], help="Print only container IDs.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            _kubeai_stub("ps")
+        cmd = _compose_base_cmd(cfg) + ["ps"]
+        if config.all:
+            cmd.append("--all")
+        if config.services_only:
+            cmd.append("--services")
+        if config.quiet:
+            cmd.append("--quiet")
+        cmd.extend(config.services or [])
+        proc = subprocess.run(cmd)
+        return int(proc.returncode)
+
+
+class RestartCLI(_ComposeWrapperBase):
+    """``docker compose restart [services...]``."""
+
+    timeout = scfg.Value(None, type=int, help="Stop timeout in seconds.")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            _kubeai_stub("restart")
+        cmd = _compose_base_cmd(cfg) + ["restart"]
+        if config.timeout is not None:
+            cmd.extend(["--timeout", str(config.timeout)])
+        cmd.extend(config.services or [])
+        proc = subprocess.run(cmd)
+        return int(proc.returncode)
+
+
+class PullCLI(_ComposeWrapperBase):
+    """``docker compose pull [services...]``."""
+
+    quiet = scfg.Value(False, isflag=True, short_alias=["q"])
+    ignore_pull_failures = scfg.Value(False, isflag=True)
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            _kubeai_stub("pull")
+        cmd = _compose_base_cmd(cfg) + ["pull"]
+        if config.quiet:
+            cmd.append("--quiet")
+        if config.ignore_pull_failures:
+            cmd.append("--ignore-pull-failures")
+        cmd.extend(config.services or [])
+        proc = subprocess.run(cmd)
+        return int(proc.returncode)
+
+
+class StartCLI(_ComposeWrapperBase):
+    """``docker compose start [services...]``."""
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            _kubeai_stub("start")
+        cmd = _compose_base_cmd(cfg) + ["start"]
+        cmd.extend(config.services or [])
+        proc = subprocess.run(cmd)
+        return int(proc.returncode)
+
+
+class StopCLI(_ComposeWrapperBase):
+    """``docker compose stop [services...]``."""
+
+    timeout = scfg.Value(None, type=int)
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            _kubeai_stub("stop")
+        cmd = _compose_base_cmd(cfg) + ["stop"]
+        if config.timeout is not None:
+            cmd.extend(["--timeout", str(config.timeout)])
+        cmd.extend(config.services or [])
+        proc = subprocess.run(cmd)
+        return int(proc.returncode)
+
+
+# ---------------------------------------------------------------------------
+# Smoke-test / benchmark commands
+# ---------------------------------------------------------------------------
+
+
+def _infer_default_base_url(cfg: dict[str, Any], config: Any) -> str:
+    deployment = {
+        "backend": backend_name(cfg),
+        "cluster": cfg.get("cluster", {}),
+        "ports": cfg.get("ports", {}),
+    }
+    return default_base_url(deployment, explicit=_as_mapping(config).get("base_url"))
 
 
 def _resolve_smoke_test_protocol(
     cfg: dict[str, Any],
-    args: argparse.Namespace,
+    config: Any,
     model_name: str,
 ) -> str:
-    """Pick the OpenAI route to exercise in smoke-test.
+    """Pick the OpenAI route for smoke-test based on protocol resolution order.
 
-    Order of precedence:
-      1. ``--protocol`` CLI override (``chat`` or ``completions``).
-      2. Resolved deployment: if the requested model maps to a service whose
-         protocol_mode is known, use that.
-      3. Active profile's primary service protocol_mode.
-      4. Fallback: ``chat``.
+    1. ``--protocol`` CLI override (``chat`` or ``completions``).
+    2. Resolved deployment: if the requested model maps to a service whose
+       protocol_mode is known, use that.
+    3. Active profile's primary service protocol_mode.
+    4. Fallback: ``chat``.
     """
-    explicit = getattr(args, "protocol", None)
+    overrides = _as_mapping(config)
+    explicit = overrides.get("protocol")
     if explicit:
         return str(explicit)
     try:
         plan = build_plan(
             cfg,
-            profile_name=getattr(args, "profile", None),
-            allow_unsupported=effective_allow_unsupported(args, cfg),
-            inventory=effective_inventory(args),
+            profile_name=overrides.get("profile"),
+            allow_unsupported=effective_allow_unsupported(config, cfg),
+            inventory=effective_inventory(config),
         )
     except Exception:
         return "chat"
@@ -960,372 +1397,159 @@ def _resolve_smoke_test_protocol(
     return "chat"
 
 
-def cmd_smoke_test(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    env = parse_env_file(runtime_env_path(cfg)) if backend_name(cfg) == "compose" else {}
-    base_url = _infer_default_base_url(cfg, args)
-    headers = {"Content-Type": "application/json"}
-    api_key = args.api_key or env.get("LITELLM_MASTER_KEY", "")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+class SmokeTestCLI(
+    _PathOverridesMixin,
+    _ProfileOverrideMixin,
+    _BackendOverrideMixin,
+    _PortOverridesMixin,
+    _ClusterOverridesMixin,
+    _AllowUnsupportedMixin,
+    _SimulateHardwareMixin,
+):
+    """Probe the running router with a single chat/completions request."""
 
-    models_resp = requests.get(f"{base_url}/models", headers=headers, timeout=30)
-    models_resp.raise_for_status()
-    models = models_resp.json().get("data", [])
-    print(json.dumps(models_resp.json(), indent=2))
-    if args.skip_chat:
-        return 0
-    if not models:
-        raise SystemExit("No models returned from /models")
-    model_name = args.model or models[0]["id"]
-    protocol = _resolve_smoke_test_protocol(cfg, args, model_name)
-    if protocol == "completions":
-        payload = {
-            "model": model_name,
-            "prompt": args.prompt,
-            "max_tokens": args.max_tokens,
-        }
-        endpoint = f"{base_url}/completions"
-    else:
-        payload = {
-            "model": model_name,
-            "messages": [{"role": "user", "content": args.prompt}],
-            "max_tokens": args.max_tokens,
-        }
-        endpoint = f"{base_url}/chat/completions"
-    resp = requests.post(endpoint, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
-    print(json.dumps(resp.json(), indent=2))
-    return 0
+    __command__ = "smoke-test"
 
-
-def cmd_kubeai_sync_resource_profiles(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args, allow_missing=True)
-    # User-supplied path: anchor on the user's current working directory.
-    source = Path(args.from_file)
-    if not source.is_absolute():
-        source = Path.cwd() / source
-    values_doc = load_yaml(source)
-    if "resourceProfiles" not in values_doc:
-        raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
-    target = save_kubeai_resource_profiles(values_doc)
-    if plan_path(cfg).exists():
-        plan_path(cfg).unlink()
-    profiles, _, _ = load_kubeai_resource_profiles()
-    print(f"Wrote {target}")
-    print(f"Synced {len(profiles)} KubeAI resource profile(s)")
-    return 0
-
-
-def add_override_args(
-    parser: argparse.ArgumentParser,
-    *,
-    include_profile: bool = False,
-    include_backend: bool = True,
-    include_compose: bool = False,
-    include_ports: bool = False,
-    include_cluster: bool = False,
-    include_state: bool = False,
-    include_output: bool = True,
-) -> None:
-    if include_profile:
-        parser.add_argument("--profile", default=None)
-    if include_backend:
-        parser.add_argument("--backend", choices=["compose", "kubeai"], default=None)
-    if include_compose:
-        parser.add_argument("--compose-cmd", default=None)
-    if include_ports:
-        parser.add_argument("--litellm-port", type=int, default=None)
-        parser.add_argument("--open-webui-port", type=int, default=None)
-        parser.add_argument("--postgres-port", type=int, default=None)
-    if include_state:
-        parser.add_argument("--state-root", default=None)
-        parser.add_argument("--runtime-dir", default=None)
-    if include_output:
-        parser.add_argument(
-            "--generated-dir",
-            default=None,
-            help=(
-                "Directory to write rendered artifacts (docker-compose.yml, "
-                ".env, plan.yaml, kubeai/*) into. Defaults to "
-                "<data-dir>/generated (data-dir is ~/.cache/vllm_service by "
-                "default). May also be set via the VLLM_SERVICE_GENERATED_DIR "
-                "env var or output.generated_dir in config.yaml."
-            ),
-        )
-    if include_cluster:
-        parser.add_argument("--namespace", default=None)
-        parser.add_argument("--ingress-host", default=None)
-        parser.add_argument("--ingress", dest="ingress_enabled", action="store_true")
-        parser.add_argument("--no-ingress", dest="ingress_enabled", action="store_false")
-        parser.set_defaults(ingress_enabled=None)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="Manage named serving profiles for local Compose and Kubernetes-backed KubeAI serving."
-    )
-    p.add_argument(
-        "--config-dir",
-        default=None,
-        help=(
-            f"Directory containing config.yaml / models.yaml. Defaults to "
-            f"~/.config/vllm_service (XDG_CONFIG_HOME) or ${CONFIG_DIR_ENV} "
-            f"when set."
-        ),
-    )
-    p.add_argument(
-        "--data-dir",
-        default=None,
-        help=(
-            f"Directory for rendered artifacts (generated/) and bind-mount "
-            f"state (hf-cache, postgres volumes, etc.). Defaults to "
-            f"~/.cache/vllm_service (XDG_CACHE_HOME) or ${DATA_DIR_ENV} "
-            f"when set. Per-knob env vars (VLLM_SERVICE_GENERATED_DIR, "
-            f"VLLM_SERVICE_STATE_ROOT) and config.yaml entries still take "
-            f"precedence."
-        ),
-    )
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    s = sub.add_parser("setup")
-    add_override_args(
-        s,
-        include_profile=True,
-        include_backend=True,
-        include_compose=True,
-        include_ports=True,
-        include_cluster=True,
-        include_state=True,
-    )
-    s.add_argument("--reset", action="store_true", help="Start from default config values before applying overrides.")
-    s.add_argument(
-        "--resource-profiles-file",
-        default=None,
-        help="For kubeai setups, sync a local Helm values file with resourceProfiles into kubeai-values.local.yaml.",
-    )
-    s.set_defaults(func=cmd_setup)
-
-    s = sub.add_parser("init")
-    s.add_argument("--force", action="store_true")
-    s.set_defaults(func=cmd_init)
-
-    for name, func in [("resolve", cmd_resolve), ("validate", cmd_validate), ("lock", cmd_lock), ("render", cmd_render)]:
-        s = sub.add_parser(name)
-        add_override_args(s, include_profile=True, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-        s.add_argument("--allow-unsupported", action="store_true")
-        s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-        if name == "render":
-            s.add_argument(
-                "-y", "--yes",
-                action="store_true",
-                help="Apply rendered changes without prompting. Without this flag, render shows a per-file diff and asks for confirmation.",
-            )
-        s.set_defaults(func=func)
-
-    s = sub.add_parser("up")
-    add_override_args(s, include_profile=True, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-    s.add_argument("--allow-unsupported", action="store_true")
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-    s.add_argument("-d", "--detach", action="store_true", help="Run in background instead of attaching to logs")
-    s.add_argument(
-        "-y", "--yes",
-        action="store_true",
-        help="If `up` triggers a re-render, apply the rendered changes without prompting.",
-    )
-    s.set_defaults(func=cmd_up)
-
-    s = sub.add_parser("down")
-    add_override_args(s, include_backend=True, include_compose=True, include_ports=True)
-    s.set_defaults(func=cmd_down)
-
-    s = sub.add_parser("switch")
-    s.add_argument("profile")
-    add_override_args(s, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-    s.add_argument("--apply", action="store_true")
-    s.add_argument("--allow-unsupported", action="store_true")
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-    s.add_argument(
-        "-y", "--yes",
-        action="store_true",
-        help="Apply rendered changes without prompting.",
-    )
-    s.set_defaults(func=cmd_switch)
-
-    s = sub.add_parser("list-models")
-    s.set_defaults(func=cmd_list_models)
-
-    s = sub.add_parser("list-profiles")
-    s.set_defaults(func=cmd_list_profiles)
-
-    s = sub.add_parser("kubeai-sync-resource-profiles")
-    s.add_argument("--from-file", required=True, help="Helm values file containing a top-level resourceProfiles map.")
-    s.set_defaults(func=cmd_kubeai_sync_resource_profiles)
-
-    s = sub.add_parser("explain")
-    s.add_argument("--file", default=None)
-    s.set_defaults(func=cmd_explain)
-
-    s = sub.add_parser("describe-profile")
-    s.add_argument("profile")
-    add_override_args(s, include_backend=True)
-    s.add_argument("--format", choices=["json", "yaml"], default="yaml")
-    s.add_argument("--output", default=None)
-    s.add_argument("--allow-unsupported", action="store_true")
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-    s.set_defaults(func=cmd_describe_profile)
-
-    s = sub.add_parser("export-benchmark-bundle")
-    s.add_argument("profile")
-    add_override_args(s, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-    s.add_argument("--base-url", default=None)
-    s.add_argument("--output-dir", default=None)
-    s.add_argument("--allow-unsupported", action="store_true")
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-    s.set_defaults(func=cmd_export_benchmark_bundle)
-
-    s = sub.add_parser("export-helm-bundle")
-    s.add_argument("profile")
-    add_override_args(s, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-    s.add_argument("--base-url", default=None)
-    s.add_argument("--output-dir", default=None)
-    s.add_argument("--allow-unsupported", action="store_true")
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-    s.set_defaults(func=cmd_export_helm_bundle)
-
-    s = sub.add_parser("verify-profile")
-    s.add_argument("profile")
-    add_override_args(s, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-    s.add_argument("--allow-unsupported", action="store_true")
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-    s.set_defaults(func=cmd_verify_profile)
-
-    s = sub.add_parser("benchmark")
-    s.add_argument("--model", required=True)
-    add_override_args(s, include_backend=True, include_compose=True, include_ports=True)
-    s.add_argument("--base-url", default=None)
-    s.add_argument("--api-key", default=None)
-    s.set_defaults(func=cmd_benchmark)
-
-    s = sub.add_parser("deploy")
-    add_override_args(s, include_profile=True, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-    s.add_argument("-d", "--detach", action="store_true")
-    s.add_argument("--allow-unsupported", action="store_true")
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM", help="Simulate N GPUs with M GiB each (e.g. 4x96, 2x80).")
-    s.add_argument(
-        "-y", "--yes",
-        action="store_true",
-        help="If `deploy` triggers a re-render, apply the rendered changes without prompting.",
-    )
-    s.set_defaults(func=cmd_deploy)
-
-    s = sub.add_parser("status")
-    add_override_args(s, include_backend=True, include_compose=True, include_ports=True, include_cluster=True)
-    s.set_defaults(func=cmd_status)
-
-    s = sub.add_parser(
-        "logs",
-        help="Tail rendered Compose service logs without typing the full docker compose path.",
-    )
-    add_override_args(s, include_backend=True, include_compose=True)
-    s.add_argument(
-        "services",
-        nargs="*",
-        help="Optional service names to filter (e.g. open-webui litellm). Empty = all services.",
-    )
-    s.add_argument(
-        "-f", "--follow",
-        action="store_true",
-        help="Stream logs (docker compose logs -f).",
-    )
-    s.add_argument(
-        "--tail",
-        default=None,
-        help="Tail the last N lines (default: all). Pass a number or 'all'.",
-    )
-    s.add_argument("--timestamps", action="store_true")
-    s.add_argument("--no-color", action="store_true")
-    s.set_defaults(func=cmd_logs)
-
-    s = sub.add_parser("ps", help="`docker compose ps` for the rendered stack.")
-    add_override_args(s, include_backend=True, include_compose=True)
-    s.add_argument("services", nargs="*", help="Optional service filter.")
-    s.add_argument("-a", "--all", action="store_true", help="Include stopped containers.")
-    s.add_argument(
-        "--services-only",
-        action="store_true",
-        help="Print only service names (passes --services to docker compose).",
-    )
-    s.add_argument("-q", "--quiet", action="store_true", help="Print only container IDs.")
-    s.set_defaults(func=cmd_ps)
-
-    s = sub.add_parser("restart", help="`docker compose restart [services...]`.")
-    add_override_args(s, include_backend=True, include_compose=True)
-    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
-    s.add_argument("--timeout", type=int, default=None, help="Stop timeout in seconds.")
-    s.set_defaults(func=cmd_restart)
-
-    s = sub.add_parser("pull", help="`docker compose pull [services...]`.")
-    add_override_args(s, include_backend=True, include_compose=True)
-    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
-    s.add_argument("-q", "--quiet", action="store_true")
-    s.add_argument("--ignore-pull-failures", action="store_true")
-    s.set_defaults(func=cmd_pull)
-
-    s = sub.add_parser("start", help="`docker compose start [services...]` (re-starts stopped containers).")
-    add_override_args(s, include_backend=True, include_compose=True)
-    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
-    s.set_defaults(func=cmd_start)
-
-    s = sub.add_parser("stop", help="`docker compose stop [services...]` (stops without removing).")
-    add_override_args(s, include_backend=True, include_compose=True)
-    s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
-    s.add_argument("--timeout", type=int, default=None)
-    s.set_defaults(func=cmd_stop)
-
-    s = sub.add_parser("smoke-test")
-    add_override_args(
-        s,
-        include_profile=True,
-        include_backend=True,
-        include_ports=True,
-        include_cluster=True,
-    )
-    s.add_argument("--base-url", default=None)
-    s.add_argument("--api-key", default=None)
-    s.add_argument("--model", default=None)
-    s.add_argument("--prompt", default="Say hello in one sentence.")
-    s.add_argument("--max-tokens", type=int, default=128)
-    s.add_argument("--skip-chat", action="store_true")
-    s.add_argument(
-        "--protocol",
+    base_url = scfg.Value(None, type=str)
+    api_key = scfg.Value(None, type=str)
+    model = scfg.Value(None, type=str)
+    prompt = scfg.Value("Say hello in one sentence.", type=str)
+    max_tokens = scfg.Value(128, type=int)
+    skip_chat = scfg.Value(False, isflag=True)
+    protocol = scfg.Value(
+        None,
         choices=["chat", "completions"],
-        default=None,
-        help="Force the smoke-test endpoint to /v1/chat/completions or /v1/completions. "
-             "Defaults to the resolved profile's protocol_mode.",
+        help="Force the smoke-test endpoint. Defaults to the resolved profile's protocol_mode.",
     )
-    s.add_argument(
-        "--allow-unsupported",
-        action="store_true",
-        help="Allow protocol resolution to use a profile that has validation errors.",
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        env = parse_env_file(runtime_env_path(cfg)) if backend_name(cfg) == "compose" else {}
+        base_url = _infer_default_base_url(cfg, config)
+        headers = {"Content-Type": "application/json"}
+        api_key = config.api_key or env.get("LITELLM_MASTER_KEY", "")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        models_resp = requests.get(f"{base_url}/models", headers=headers, timeout=30)
+        models_resp.raise_for_status()
+        models = models_resp.json().get("data", [])
+        print(json.dumps(models_resp.json(), indent=2))
+        if config.skip_chat:
+            return 0
+        if not models:
+            raise SystemExit("No models returned from /models")
+        model_name = config.model or models[0]["id"]
+        protocol = _resolve_smoke_test_protocol(cfg, config, model_name)
+        if protocol == "completions":
+            payload = {
+                "model": model_name,
+                "prompt": config.prompt,
+                "max_tokens": config.max_tokens,
+            }
+            endpoint = f"{base_url}/completions"
+        else:
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": config.prompt}],
+                "max_tokens": config.max_tokens,
+            }
+            endpoint = f"{base_url}/chat/completions"
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=120)
+        resp.raise_for_status()
+        print(json.dumps(resp.json(), indent=2))
+        return 0
+
+
+class BenchmarkCLI(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+    _PortOverridesMixin,
+):
+    """Run benchmark_prompts.json against the router."""
+
+    model = scfg.Value(None, type=str, required=True)
+    base_url = scfg.Value(None, type=str)
+    api_key = scfg.Value(None, type=str)
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        # benchmark_prompts.json is a user-supplied fixture. Look for it
+        # first in the config dir, then fall back to CWD so an ad-hoc
+        # invocation from a checkout still picks up a sibling file.
+        prompts_path = config_root() / "benchmark_prompts.json"
+        if not prompts_path.exists():
+            prompts_path = Path.cwd() / "benchmark_prompts.json"
+        if not prompts_path.exists():
+            raise SystemExit(
+                f"benchmark_prompts.json not found at {config_root() / 'benchmark_prompts.json'} "
+                f"or {Path.cwd() / 'benchmark_prompts.json'}"
+            )
+        prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
+        cfg = config_for_runtime(config)
+        env = parse_env_file(runtime_env_path(cfg))
+        base_url = config.base_url or f"http://127.0.0.1:{cfg['ports']['litellm']}/v1"
+        api_key = config.api_key or env.get("LITELLM_MASTER_KEY", "")
+        data = run_benchmark(base_url, api_key, config.model, prompts)
+        print(json.dumps(data, indent=2))
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Modal CLI + entry point
+# ---------------------------------------------------------------------------
+
+
+class ManageCLI(scfg.ModalCLI):
+    description = (
+        "Render and run vLLM serving profiles through the Compose or KubeAI "
+        "backends. Primary workflow: setup -> render -> up (or deploy)."
     )
-    s.add_argument("--simulate-hardware", default=None, metavar="NxM")
-    s.set_defaults(func=cmd_smoke_test)
 
-    return p
+    # Config / profile management
+    setup = SetupCLI
+    init = InitCLI
+    resolve = ResolveCLI
+    validate = ValidateCLI
+    lock = LockCLI
+    render = RenderCLI
+    switch = SwitchCLI
+    list_models = ListModelsCLI
+    list_profiles = ListProfilesCLI
+    explain = ExplainCLI
+    describe_profile = DescribeProfileCLI
+    verify_profile = VerifyProfileCLI
+    kubeai_sync_resource_profiles = KubeaiSyncResourceProfilesCLI
+    export_benchmark_bundle = ExportBenchmarkBundleCLI
+    export_helm_bundle = ExportHelmBundleCLI
+
+    # Runtime
+    up = UpCLI
+    down = DownCLI
+    deploy = DeployCLI
+    status = StatusCLI
+    smoke_test = SmokeTestCLI
+    benchmark = BenchmarkCLI
+
+    # Compose day-2-ops wrappers
+    logs = LogsCLI
+    ps = PsCLI
+    restart = RestartCLI
+    pull = PullCLI
+    start = StartCLI
+    stop = StopCLI
 
 
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
-    # Apply --config-dir / --data-dir before any subcommand runs so all
-    # downstream calls into config_root() / data_root() see the override.
-    if getattr(args, "config_dir", None):
-        set_config_root(args.config_dir)
-    if getattr(args, "data_dir", None):
-        set_data_root(args.data_dir)
-    return int(args.func(args))
+def main(argv=None) -> int:
+    rv = ManageCLI.main(argv=argv)
+    return int(rv) if rv is not None else 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

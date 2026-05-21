@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import os
 import subprocess
 import sys
@@ -82,7 +81,7 @@ def test_setup_compose_then_render_without_manual_file_edits(tmp_path: Path) -> 
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert cfg["backend"] == "compose"
     assert cfg["active_profile"] == "qwen2-5-7b-instruct-turbo-default"
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     assert (tmp_path / "generated" / "docker-compose.yml").exists()
 
 
@@ -104,7 +103,7 @@ def test_setup_kubeai_then_render_without_manual_file_edits(tmp_path: Path) -> N
     assert cfg["backend"] == "kubeai"
     assert cfg["cluster"]["namespace"] == "demo-llm"
     assert cfg["cluster"]["ingress"]["enabled"] is True
-    run_cli(tmp_path, "render", "--simulate-hardware", "2x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "2x96")
     assert (tmp_path / "generated" / "kubeai" / "models.yaml").exists()
     assert (tmp_path / "generated" / "kubeai" / "ingress.yaml").exists()
 
@@ -134,6 +133,7 @@ def test_render_overrides_backend_and_profile_without_persisting_config(tmp_path
     run_cli(
         tmp_path,
         "render",
+        "--yes",
         "--backend",
         "kubeai",
         "--profile",
@@ -204,13 +204,13 @@ def test_kubeai_config_fallback_still_works_before_and_after_render_without_sync
         "kubeai",
     )
     run_cli(tmp_path, "validate", "--simulate-hardware", "1x96")
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     assert not (tmp_path / "kubeai-values.local.yaml").exists()
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     cfg["resource_profiles"]["gpu-single-default"]["node_selector"] = {"example.com/profile-source": "config-after-render"}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     run_cli(tmp_path, "validate", "--simulate-hardware", "1x96")
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     rendered_values = yaml.safe_load((tmp_path / "generated" / "kubeai" / "kubeai-values.yaml").read_text())
     assert rendered_values["resourceProfiles"]["gpu-single-default"]["nodeSelector"]["example.com/profile-source"] == "config-after-render"
 
@@ -232,7 +232,7 @@ def test_kubeai_synced_source_is_preferred_over_config_and_preserves_unknown_fie
     cfg["resource_profiles"]["gpu-single-default"]["node_selector"] = {"example.com/profile-source": "config"}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     run_cli(tmp_path, "kubeai-sync-resource-profiles", "--from-file", str(source))
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     generated_values = yaml.safe_load((tmp_path / "generated" / "kubeai" / "kubeai-values.yaml").read_text())
     assert generated_values["resourceProfiles"]["gpu-single-default"]["nodeSelector"]["nvidia.com/gpu.product"] == "NVIDIA_TEST_GPU"
     assert generated_values["resourceProfiles"]["gpu-single-default"]["extraField"] == "keep-me"
@@ -254,7 +254,7 @@ def test_kubeai_local_values_change_marks_render_stale(tmp_path: Path, monkeypat
         "--resource-profiles-file",
         str(source),
     )
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     _anchor_paths(tmp_path, monkeypatch)
     assert cli_mod.render_is_stale() is False
     time.sleep(1.1)
@@ -279,7 +279,7 @@ def test_kubeai_deploy_rerenders_from_updated_local_values(tmp_path: Path, monke
         "--resource-profiles-file",
         str(source),
     )
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     _anchor_paths(tmp_path, monkeypatch)
 
     values_doc = yaml.safe_load((tmp_path / "kubeai-values.local.yaml").read_text())
@@ -293,21 +293,12 @@ def test_kubeai_deploy_rerenders_from_updated_local_values(tmp_path: Path, monke
         observed["source"] = deployment["resource_profiles_source"]
 
     monkeypatch.setattr(cli_mod, "deploy_rendered_artifacts", fake_deploy_rendered_artifacts)
-    args = argparse.Namespace(
-        profile=None,
-        backend=None,
-        compose_cmd=None,
-        litellm_port=None,
-        open_webui_port=None,
-        postgres_port=None,
-        namespace=None,
-        ingress_host=None,
-        ingress_enabled=None,
+    cli_mod.DeployCLI.main(
+        argv=False,
         detach=False,
-        allow_unsupported=False,
         simulate_hardware="1x96",
+        yes=True,
     )
-    cli_mod.cmd_deploy(args)
     generated_values = yaml.safe_load((tmp_path / "generated" / "kubeai" / "kubeai-values.yaml").read_text())
     assert observed["source"] == str((tmp_path / "kubeai-values.local.yaml"))
     assert generated_values["resourceProfiles"]["gpu-single-default"]["nodeSelector"]["example.com/profile-source"] == "deploy-rerender"
@@ -335,21 +326,16 @@ def test_switch_apply_persists_only_active_profile_and_uses_transient_overrides(
         observed["profile"] = deployment["serving_profile"]["public_name"]
 
     monkeypatch.setattr(cli_mod, "deploy_rendered_artifacts", fake_deploy_rendered_artifacts)
-    args = argparse.Namespace(
+    cli_mod.SwitchCLI.main(
+        argv=False,
         profile="qwen2-5-7b-instruct-turbo-default",
         backend="kubeai",
         compose_cmd="podman compose",
-        litellm_port=None,
-        open_webui_port=None,
-        postgres_port=None,
         namespace="override-ns",
-        ingress_host=None,
-        ingress_enabled=None,
         apply=True,
-        allow_unsupported=False,
         simulate_hardware="1x96",
+        yes=True,
     )
-    cli_mod.cmd_switch(args)
 
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert cfg["active_profile"] == "qwen2-5-7b-instruct-turbo-default"
@@ -373,7 +359,7 @@ def test_switch_apply_compose_recreates_router_when_config_changes(
         "--profile",
         "gpt-oss-20b-chat",
     )
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     _anchor_paths(tmp_path, monkeypatch)
 
     invocations: list[list[str]] = []
@@ -384,21 +370,13 @@ def test_switch_apply_compose_recreates_router_when_config_changes(
     import vllm_service.docker_utils as du
     monkeypatch.setattr(du, "run", fake_run)
 
-    args = argparse.Namespace(
+    cli_mod.SwitchCLI.main(
+        argv=False,
         profile="qwen2-5-7b-instruct-turbo-default",
-        backend=None,
-        compose_cmd=None,
-        litellm_port=None,
-        open_webui_port=None,
-        postgres_port=None,
-        namespace=None,
-        ingress_host=None,
-        ingress_enabled=None,
         apply=True,
-        allow_unsupported=False,
         simulate_hardware="1x96",
+        yes=True,
     )
-    cli_mod.cmd_switch(args)
 
     flat = [" ".join(c) for c in invocations]
     assert not any("down -v" in c or "--volumes" in c for c in flat)
@@ -417,7 +395,7 @@ def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
         "--profile",
         "gpt-oss-20b-chat",
     )
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
     _anchor_paths(tmp_path, monkeypatch)
 
     state_root = tmp_path / "state"
@@ -436,21 +414,13 @@ def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
     import vllm_service.docker_utils as du
     monkeypatch.setattr(du, "run", fake_run)
 
-    args = argparse.Namespace(
+    cli_mod.SwitchCLI.main(
+        argv=False,
         profile="qwen2-5-7b-instruct-turbo-default",
-        backend=None,
-        compose_cmd=None,
-        litellm_port=None,
-        open_webui_port=None,
-        postgres_port=None,
-        namespace=None,
-        ingress_host=None,
-        ingress_enabled=None,
         apply=True,
-        allow_unsupported=False,
         simulate_hardware="1x96",
+        yes=True,
     )
-    cli_mod.cmd_switch(args)
 
     flat = [" ".join(c) for c in invocations]
     assert not any("down -v" in c or "--volumes" in c for c in flat)
@@ -467,22 +437,12 @@ def test_kubeai_status_namespace_error_is_actionable(tmp_path: Path, monkeypatch
         raise cli_mod.CommandError(f"Command failed in namespace {namespace}")
 
     monkeypatch.setattr(cli_mod, "kubeai_print_status", fake_status)
-    args = argparse.Namespace(
-        backend=None,
-        compose_cmd=None,
-        litellm_port=None,
-        open_webui_port=None,
-        postgres_port=None,
-        namespace=None,
-        ingress_host=None,
-        ingress_enabled=None,
-    )
     try:
-        cli_mod.cmd_status(args)
+        cli_mod.StatusCLI.main(argv=False)
     except SystemExit as ex:
         text = str(ex)
     else:
-        raise AssertionError("expected cmd_status to raise SystemExit")
+        raise AssertionError("expected StatusCLI.main to raise SystemExit")
     assert "namespace 'default'" in text
     assert "setup --backend kubeai --namespace default" in text
 
@@ -498,34 +458,20 @@ class _FakeResponse:
         return self._payload
 
 
-def _smoke_test_args(**overrides) -> argparse.Namespace:
+def _smoke_test_kwargs(**overrides) -> dict:
     base = dict(
-        profile=None,
-        backend=None,
-        compose_cmd=None,
-        litellm_port=None,
-        open_webui_port=None,
-        postgres_port=None,
-        namespace=None,
-        ingress_host=None,
-        ingress_enabled=None,
         base_url="http://127.0.0.1:14000/v1",
-        api_key=None,
-        model=None,
         prompt="Say hello in one sentence.",
         max_tokens=64,
-        skip_chat=False,
-        protocol=None,
-        allow_unsupported=False,
         simulate_hardware="1x96",
     )
     base.update(overrides)
-    return argparse.Namespace(**base)
+    return base
 
 
 def _setup_compose(tmp_path: Path, profile: str) -> None:
     run_cli(tmp_path, "setup", "--backend", "compose", "--profile", profile)
-    run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
+    run_cli(tmp_path, "render", "--yes", "--simulate-hardware", "1x96")
 
 
 def test_smoke_test_uses_chat_endpoint_for_chat_profiles(tmp_path: Path, monkeypatch) -> None:
@@ -543,7 +489,7 @@ def test_smoke_test_uses_chat_endpoint_for_chat_profiles(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(cli_mod.requests, "get", fake_get)
     monkeypatch.setattr(cli_mod.requests, "post", fake_post)
-    cli_mod.cmd_smoke_test(_smoke_test_args(model="qwen2-5-7b-instruct-turbo-default"))
+    cli_mod.SmokeTestCLI.main(argv=False, **_smoke_test_kwargs(model="qwen2-5-7b-instruct-turbo-default"))
     assert posted["url"].endswith("/chat/completions")
     assert "messages" in posted["json"]
     assert "prompt" not in posted["json"]
@@ -566,7 +512,7 @@ def test_smoke_test_uses_completions_endpoint_for_completions_profiles(
 
     monkeypatch.setattr(cli_mod.requests, "get", fake_get)
     monkeypatch.setattr(cli_mod.requests, "post", fake_post)
-    cli_mod.cmd_smoke_test(_smoke_test_args(model="eleutherai/pythia-1b-v0"))
+    cli_mod.SmokeTestCLI.main(argv=False, **_smoke_test_kwargs(model="eleutherai/pythia-1b-v0"))
     assert posted["url"].endswith("/completions")
     assert not posted["url"].endswith("/chat/completions")
     assert "prompt" in posted["json"]
@@ -590,8 +536,9 @@ def test_smoke_test_protocol_override_forces_completions(
 
     monkeypatch.setattr(cli_mod.requests, "get", fake_get)
     monkeypatch.setattr(cli_mod.requests, "post", fake_post)
-    cli_mod.cmd_smoke_test(
-        _smoke_test_args(model="qwen2-5-7b-instruct-turbo-default", protocol="completions")
+    cli_mod.SmokeTestCLI.main(
+        argv=False,
+        **_smoke_test_kwargs(model="qwen2-5-7b-instruct-turbo-default", protocol="completions"),
     )
     assert posted["url"].endswith("/completions")
     assert "prompt" in posted["json"]
