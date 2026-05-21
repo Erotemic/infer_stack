@@ -13,6 +13,146 @@ profiles:
     router:
       aliases:
         qwen3.5-9b: chat
+  qwen3.5-0.8b-single:
+    # Smallest synthetic Qwen3.5 model on one GPU — exercises the
+    # planner/renderer with the smallest memory class. Does NOT pull
+    # weights (Qwen3.5 is a synthetic catalog entry).
+    description: Tiny Qwen3.5 0.8B on a single GPU; smallest CLI-runnable profile.
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: qwen3.5-0.8b
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+    router:
+      aliases:
+        qwen3.5-0.8b: chat
+
+  # -- single-GPU profiles for real (HuggingFace-resolvable) models ----
+  # These actually pull weights and start vLLM, so they're appropriate
+  # for integration / smoke tests that verify the rendered stack works
+  # end-to-end, not just the planner.
+  smollm2-135m-single:
+    description: SmolLM2 135M Instruct on one GPU; smallest real-weights profile (~270 MB).
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: smollm2-135m-instruct
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+    router:
+      aliases:
+        smollm2-135m: chat
+
+  qwen2.5-0.5b-instruct-single:
+    description: Qwen2.5 0.5B Instruct on one GPU; smallest real Qwen for end-to-end tests.
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: qwen2.5-0.5b-instruct
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+    router:
+      aliases:
+        qwen2.5-0.5b: chat
+
+  pythia-160m-single:
+    description: Pythia 160M (completions-only) on one GPU; smallest real base-model profile.
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: pythia-160m
+        protocol_mode: completions
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+    router:
+      aliases:
+        pythia-160m: chat
+
+  pythia-410m-single:
+    description: Pythia 410M (completions-only) on one GPU.
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: pythia-410m
+        protocol_mode: completions
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+    router:
+      aliases:
+        pythia-410m: chat
+
+  # -- hardware-shape test profiles ----------------------------------
+  # Aim points for integration tests. The placement is ``first_fit`` so
+  # CUDA_VISIBLE_DEVICES (or a future --allowed-gpus flag) can constrain
+  # which GPU(s) the resolver actually places onto.
+  test-single-11gb:
+    # Designed to fit on a single ~11 GB GPU (e.g. a workstation 3080).
+    # SmolLM2 leaves plenty of headroom; the runtime overrides keep KV
+    # cache and concurrency low so multiple tests can run on the same
+    # GPU without OOM.
+    description: Integration-test profile for a single ~11 GB GPU; uses SmolLM2 135M.
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: smollm2-135m-instruct
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+        runtime:
+          max_model_len: 2048
+          gpu_memory_utilization: 0.5
+          max_num_batched_tokens: 2048
+          max_num_seqs: 8
+          enable_prefix_caching: true
+    router:
+      aliases:
+        smollm2-135m: chat
+
+  test-multi-gpu:
+    # Designed to exercise the multi-GPU (tensor-parallel) code path
+    # cheaply. Qwen2.5-0.5B is small enough that the TP overhead
+    # dominates serve time, but that's fine for a correctness test —
+    # this is about validating the rendered TP=2 wiring, not throughput.
+    description: Integration-test profile across 2 GPUs (TP=2); uses Qwen2.5 0.5B Instruct.
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: qwen2.5-0.5b-instruct
+        placement:
+          strategy: first_fit
+          gpu_count: 2
+        topology:
+          tensor_parallel_size: 2
+        runtime:
+          max_model_len: 4096
+          gpu_memory_utilization: 0.6
+          max_num_batched_tokens: 4096
+          max_num_seqs: 8
+          enable_prefix_caching: true
+    router:
+      aliases:
+        qwen2.5-0.5b: chat
+
   qwen-mixed:
     description: Multiple Qwen models behind LiteLLM.
     vllm:
