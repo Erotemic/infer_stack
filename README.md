@@ -107,6 +107,41 @@ vllm-stack render --generated-dir /tmp/scratch-out
 every subcommand), so they appear **after** the subcommand name on the
 CLI. For "set once, applies to everything" use the env vars instead.
 
+## Constraining placement to specific GPUs
+
+If some of your GPUs are tied up by other work, restrict the planner
+(and the rendered ``device_ids``) to the subset you want it to use:
+
+```bash
+# Only place onto GPU 1 (e.g. GPU 0 is running a display).
+vllm-stack render --yes --profile test-single-11gb --allowed-gpus 1
+
+# Or pin a TP=2 profile to physical GPUs 1 and 3.
+vllm-stack render --yes --profile test-multi-gpu --allowed-gpus 1,3
+```
+
+``--allowed-gpus`` (or ``VLLM_SERVICE_ALLOWED_GPUS=1,3``) filters the
+detected inventory before placement — real indices are preserved, so
+the rendered compose stack pins ``device_ids: ["1", "3"]`` to those
+exact physical GPUs. Useful for integration tests that need to share a
+host with other jobs.
+
+## Demos / integration recipes
+
+End-to-end examples under [docs/demos/](docs/demos/) are written as
+markdown tutorials whose code blocks are individually executable. To
+verify a demo still works:
+
+```bash
+pytest --codeblocks docs/demos/quickstart.md
+```
+
+Each ``bash`` block is a self-contained shell snippet you can also
+copy-paste into a terminal. See
+[docs/demos/quickstart.md](docs/demos/quickstart.md) for the canonical
+``setup → describe → validate → render`` flow on the smallest test
+profiles.
+
 User-supplied paths on the CLI (`--file`, `--from-file`,
 `--resource-profiles-file`, `--output-dir`) still resolve against the
 current working directory — they're meant to behave as typed.

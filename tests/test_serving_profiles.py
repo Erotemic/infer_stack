@@ -774,6 +774,50 @@ def test_default_state_paths_include_vllm_cache(tmp_path: Path) -> None:
     assert normalized["vllm_cache"] == str(tmp_path / "custom" / "vllm")
 
 
+def test_allowed_gpus_filters_inventory_to_real_indices(tmp_path: Path) -> None:
+    """``effective_inventory(--allowed-gpus 1,3)`` against a 4-GPU sim keeps real indices.
+
+    ``placement.strategy: first_fit`` then picks from {1, 3}; the rendered
+    compose stack pins ``device_ids`` to those physical indices (no
+    renumbering).
+    """
+    from vllm_service.cli import effective_inventory
+
+    inv = effective_inventory({"simulate_hardware": "4x24", "allowed_gpus": "1,3"})
+    assert inv is not None
+    assert inv["gpu_count"] == 2
+    assert [g["index"] for g in inv["gpus"]] == [1, 3]
+
+    cfg = _cfg(tmp_path)
+    deployment = resolve(
+        cfg,
+        inventory=inv,
+        profile_name="test-multi-gpu",
+    )
+    svc = deployment["services"][0]
+    assert svc["gpu_indices"] == [1, 3]
+    assert svc["tensor_parallel_size"] == 2
+
+    render_compose_artifacts({"deployment": deployment})
+    compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
+    assert 'device_ids: ["1", "3"]' in compose_text
+
+
+def test_allowed_gpus_too_few_for_profile_surfaces_placement_error(tmp_path: Path) -> None:
+    """Asking for 2-GPU placement when only 1 GPU is allowed must fail validation cleanly."""
+    from vllm_service.cli import effective_inventory
+
+    inv = effective_inventory({"simulate_hardware": "4x24", "allowed_gpus": "1"})
+    assert inv is not None and inv["gpu_count"] == 1
+
+    cfg = _cfg(tmp_path)
+    deployment = resolve(cfg, inventory=inv, profile_name="test-multi-gpu")
+    report = validate_resolved(deployment)
+    assert report["ok"] is False
+    joined = " | ".join(report["errors"])
+    assert "need 2 GPUs but only 1 available" in joined
+
+
 def test_output_generated_dir_redirects_compose_render(tmp_path: Path) -> None:
     """Configured output.generated_dir takes precedence over the default."""
     cfg = _cfg(tmp_path)

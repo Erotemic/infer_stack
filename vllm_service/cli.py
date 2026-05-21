@@ -51,7 +51,7 @@ from .contracts import load_profile_contract
 from .docker_utils import compose_down, compose_recreate_router, compose_up
 from .env_utils import parse_env_file
 from .exporters import export_benchmark_bundle
-from .hardware import simulate_inventory
+from .hardware import detect_inventory, simulate_inventory
 from .kubeai_ops import CommandError, deploy_rendered_artifacts, print_status as kubeai_print_status
 from .paths import (
     CONFIG_DIR_ENV,
@@ -307,6 +307,7 @@ _OVERRIDE_ATTRS = (
     "ingress_host",
     "ingress_enabled",
     "simulate_hardware",
+    "allowed_gpus",
     "generated_dir",
 )
 
@@ -321,6 +322,7 @@ _OVERRIDE_ENVS = (
     "VLLM_SERVICE_INGRESS_HOST",
     "VLLM_SERVICE_INGRESS_ENABLED",
     "VLLM_SERVICE_GENERATED_DIR",
+    "VLLM_SERVICE_ALLOWED_GPUS",
 )
 
 
@@ -340,12 +342,56 @@ def effective_allow_unsupported(args: Any | None, cfg: dict[str, Any]) -> bool:
     return arg_value or policy_value
 
 
+def _parse_allowed_gpus(raw: Any) -> list[int] | None:
+    """Parse a comma-separated list of GPU indices, or ``None`` if unset.
+
+    Accepts ints (when the value comes from ``data=`` kwargs in the
+    programmatic API), as well as strings of the form ``"1"`` or ``"1,3"``.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        items = [x.strip() for x in str(raw).split(",") if x.strip()]
+    try:
+        return [int(x) for x in items]
+    except (TypeError, ValueError) as ex:
+        raise SystemExit(
+            f"Invalid --allowed-gpus value {raw!r}: expected a comma-separated "
+            f"list of integer GPU indices (e.g. '1' or '1,3'). {ex}"
+        )
+
+
+def _filter_inventory_to_allowed(inventory: dict[str, Any], allowed: list[int] | None) -> dict[str, Any]:
+    """Return a new inventory containing only the GPUs whose ``index`` is in ``allowed``.
+
+    Real indices are preserved — there is no renumbering — so a profile
+    that says ``placement.gpu_indices: [1, 3]`` still pins to physical
+    GPUs 1 and 3 after filtering.
+    """
+    if not allowed:
+        return inventory
+    allowed_set = set(allowed)
+    filtered = [g for g in inventory.get("gpus", []) if g.get("index") in allowed_set]
+    return {"gpu_count": len(filtered), "gpus": filtered}
+
+
 def effective_inventory(args: Any | None) -> dict[str, Any] | None:
+    """Build the inventory the resolver should see, honoring CLI / env overrides.
+
+    Returns ``None`` when nothing is constraining the inventory, so the
+    resolver falls back to ``detect_inventory()`` at plan time.
+    """
     overrides = _as_mapping(args)
     spec = overrides.get("simulate_hardware")
-    if not spec:
+    allowed = _parse_allowed_gpus(
+        overrides.get("allowed_gpus") or _env_text("VLLM_SERVICE_ALLOWED_GPUS")
+    )
+    if not spec and allowed is None:
         return None
-    return simulate_inventory(spec)
+    base = simulate_inventory(spec) if spec else detect_inventory()
+    return _filter_inventory_to_allowed(base, allowed)
 
 
 def config_for_runtime(args: Any | None, *, allow_missing: bool = False) -> dict[str, Any]:
@@ -545,6 +591,7 @@ def _maybe_rerender(config: Any, cfg: dict[str, Any]) -> None:
             generated_dir=overrides.get("generated_dir"),
             allow_unsupported=bool(overrides.get("allow_unsupported")),
             simulate_hardware=overrides.get("simulate_hardware"),
+            allowed_gpus=overrides.get("allowed_gpus"),
             yes=bool(overrides.get("yes")),
         )
 
@@ -628,6 +675,20 @@ class _SimulateHardwareMixin(scfg.DataConfig):
     )
 
 
+class _AllowedGpusMixin(scfg.DataConfig):
+    allowed_gpus = scfg.Value(
+        None,
+        type=str,
+        help=(
+            "Restrict placement to a comma-separated list of GPU indices "
+            "(e.g. '1' or '1,3'). Real indices are preserved — the rendered "
+            "compose stack pins device_ids to exactly those GPUs. May also "
+            "be set via VLLM_SERVICE_ALLOWED_GPUS. Useful for integration "
+            "tests on machines where some GPUs are tied up."
+        ),
+    )
+
+
 class _PlanOverridesCLI(
     _PathOverridesMixin,
     _ProfileOverrideMixin,
@@ -638,6 +699,7 @@ class _PlanOverridesCLI(
     _GeneratedDirOverrideMixin,
     _AllowUnsupportedMixin,
     _SimulateHardwareMixin,
+    _AllowedGpusMixin,
 ):
     """Standard set of overrides for any command that builds a plan."""
 
@@ -652,6 +714,7 @@ class _SwitchPathOverridesCLI(
     _ClusterOverridesMixin,
     _AllowUnsupportedMixin,
     _SimulateHardwareMixin,
+    _AllowedGpusMixin,
 ):
     """Overrides for commands that take a positional ``profile`` (no --profile)."""
 
