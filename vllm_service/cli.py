@@ -33,6 +33,14 @@ from .env_utils import parse_env_file
 from .exporters import export_benchmark_bundle
 from .hardware import simulate_inventory
 from .kubeai_ops import CommandError, deploy_rendered_artifacts, print_status as kubeai_print_status
+from .paths import (
+    CONFIG_DIR_ENV,
+    DATA_DIR_ENV,
+    config_root,
+    data_root,
+    set_config_root,
+    set_data_root,
+)
 from .profile_runtime import default_base_url
 from .renderer import render_from_lock
 from .resolver import resolve
@@ -40,31 +48,27 @@ from .validator import validate_resolved
 from .verification import verify_profile
 
 
-def root_dir() -> Path:
-    return Path.cwd()
-
-
 def config_path() -> Path:
-    return root_dir() / CONFIG_FILE
+    return config_root() / CONFIG_FILE
 
 
 def models_path() -> Path:
-    return root_dir() / MODELS_FILE
+    return config_root() / MODELS_FILE
 
 
 def generated_dir(cfg: dict[str, Any] | None = None) -> Path:
     cfg = cfg if cfg is not None else _safe_load_config()
-    return generated_dir_for_config(root_dir(), cfg)
+    return generated_dir_for_config(cfg)
 
 
 def kubeai_generated_dir(cfg: dict[str, Any] | None = None) -> Path:
     cfg = cfg if cfg is not None else _safe_load_config()
-    return kubeai_generated_dir_for_config(root_dir(), cfg)
+    return kubeai_generated_dir_for_config(cfg)
 
 
 def plan_path(cfg: dict[str, Any] | None = None) -> Path:
     cfg = cfg if cfg is not None else _safe_load_config()
-    return plan_path_for_config(root_dir(), cfg)
+    return plan_path_for_config(cfg)
 
 
 def _safe_load_config() -> dict[str, Any]:
@@ -84,7 +88,9 @@ def load_config() -> dict[str, Any]:
     path = config_path()
     if not path.exists():
         raise SystemExit(
-            "No config.yaml found. Run `python manage.py setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first."
+            f"No config.yaml found at {path}. Run "
+            "`vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first, "
+            f"or point ${CONFIG_DIR_ENV} / --config-dir at an existing config."
         )
     return load_yaml(path)
 
@@ -225,11 +231,11 @@ def runtime_dir_for_config(cfg: dict[str, Any]) -> Path:
     state = cfg.get("state", {})
     runtime = state.get("runtime")
     if not runtime:
-        return root_dir() / "state" / "runtime"
+        return data_root() / "runtime"
     p = Path(runtime)
     if p.is_absolute():
         return p
-    return root_dir() / p
+    return data_root() / p
 
 
 def runtime_env_path(cfg: dict[str, Any]) -> Path:
@@ -264,7 +270,9 @@ def config_for_runtime(args: argparse.Namespace | None, *, allow_missing: bool =
         cfg = initial_config()
     else:
         raise SystemExit(
-            "No config.yaml found. Run `python manage.py setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first."
+            f"No config.yaml found at {config_path()}. Run "
+            "`vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first, "
+            f"or point ${CONFIG_DIR_ENV} / --config-dir at an existing config."
         )
     return apply_config_overrides(cfg, args)
 
@@ -309,7 +317,7 @@ def build_plan(
     allow_unsupported: bool = False,
     inventory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    resolved = resolve(root_dir(), cfg, inventory=inventory, profile_name=profile_name)
+    resolved = resolve(cfg, inventory=inventory, profile_name=profile_name)
     report = validate_resolved(resolved)
     return {
         "schema_version": 1,
@@ -364,7 +372,7 @@ def render_is_stale(cfg: dict[str, Any] | None = None) -> bool:
         if cfg_path.stat().st_mtime > oldest_generated:
             return True
         if backend == "kubeai":
-            local_values_path = kubeai_local_values_path(root_dir())
+            local_values_path = kubeai_local_values_path()
             if local_values_path.exists() and local_values_path.stat().st_mtime > oldest_generated:
                 return True
 
@@ -395,13 +403,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if not models_path().exists():
         save_yaml(models_path(), {"models": {}, "profiles": {}})
     if getattr(args, "resource_profiles_file", None):
+        # User-supplied path: anchor on the user's current working directory
+        # so ``--resource-profiles-file ./values.yaml`` behaves as typed.
         source = Path(args.resource_profiles_file)
         if not source.is_absolute():
-            source = root_dir() / source
+            source = Path.cwd() / source
         values_doc = load_yaml(source)
         if "resourceProfiles" not in values_doc:
             raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
-        target = save_kubeai_resource_profiles(root_dir(), values_doc)
+        target = save_kubeai_resource_profiles(values_doc)
         if plan_path(cfg).exists():
             plan_path(cfg).unlink()
         print(f"Wrote {target}")
@@ -466,7 +476,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     )
     ensure_renderable(plan)
     save_plan(plan, cfg)
-    render_from_lock(root_dir(), plan, assume_yes=bool(getattr(args, "yes", False)))
+    render_from_lock(plan, assume_yes=bool(getattr(args, "yes", False)))
     print(f"Wrote {plan_path(cfg)}")
     if backend_name(cfg) == "kubeai":
         print(f"Rendered KubeAI artifacts into {kubeai_generated_dir(cfg)}")
@@ -554,7 +564,7 @@ def cmd_switch(args: argparse.Namespace) -> int:
     )
     ensure_renderable(plan)
     save_plan(plan, cfg)
-    render_from_lock(root_dir(), plan, assume_yes=bool(getattr(args, "yes", False)))
+    render_from_lock(plan, assume_yes=bool(getattr(args, "yes", False)))
     if args.apply:
         if backend_name(cfg) == "compose":
             compose_file = generated_dir(cfg) / "docker-compose.yml"
@@ -596,14 +606,14 @@ def cmd_switch(args: argparse.Namespace) -> int:
                     detach=True,
                 )
         else:
-            deploy_rendered_artifacts(root_dir(), plan["deployment"])
+            deploy_rendered_artifacts(plan["deployment"])
     print(f"Switched active_profile to {args.profile}")
     return 0
 
 
 def cmd_list_models(args: argparse.Namespace) -> int:
     cfg = load_config() if config_path().exists() else initial_config()
-    cats = normalized_catalogs(root_dir(), cfg)
+    cats = normalized_catalogs(cfg)
     for name, model in cats.get("models", {}).items():
         ref = model.get("hf_model_id") or model.get("url", "")
         print(f"{name}: {ref}")
@@ -612,7 +622,7 @@ def cmd_list_models(args: argparse.Namespace) -> int:
 
 def cmd_list_profiles(args: argparse.Namespace) -> int:
     cfg = load_config() if config_path().exists() else initial_config()
-    cats = normalized_catalogs(root_dir(), cfg)
+    cats = normalized_catalogs(cfg)
     profiles = cats.get("profiles", {})
     hidden_legacy = set(PROFILE_NAME_ALIASES)
     for name, profile in profiles.items():
@@ -630,9 +640,10 @@ def cmd_list_profiles(args: argparse.Namespace) -> int:
 
 def cmd_explain(args: argparse.Namespace) -> int:
     if args.file:
+        # User-supplied path: anchor on the user's current working directory.
         target = Path(args.file)
         if not target.is_absolute():
-            target = root_dir() / target
+            target = Path.cwd() / target
     else:
         target = plan_path()
     if not target.exists():
@@ -661,7 +672,6 @@ def _print_structured(data: dict[str, Any], fmt: str, output: str | None) -> int
 def cmd_describe_profile(args: argparse.Namespace) -> int:
     contract = load_profile_contract(
         args.profile,
-        root=root_dir(),
         backend=_arg_or_env(args, "backend", "VLLM_SERVICE_BACKEND"),
         simulate_hardware_spec=getattr(args, "simulate_hardware", None),
     )
@@ -681,11 +691,15 @@ def _cmd_export_bundle(args: argparse.Namespace) -> int:
         "Benchmark bundle export here is transitional; prefer the helm_audit "
         "integration layer for CRFM HELM bundle generation."
     )
+    output_dir = None
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+        if not output_dir.is_absolute():
+            output_dir = Path.cwd() / output_dir
     result = export_benchmark_bundle(
-        root_dir(),
         plan["deployment"],
         base_url=args.base_url,
-        output_dir=Path(args.output_dir) if args.output_dir else None,
+        output_dir=output_dir,
     )
     print(f"Wrote {result['bundle_path']}")
     print(f"Wrote {result['model_deployments_path']}")
@@ -708,13 +722,24 @@ def cmd_verify_profile(args: argparse.Namespace) -> int:
         allow_unsupported=effective_allow_unsupported(args, cfg),
         inventory=effective_inventory(args),
     )
-    result = verify_profile(root_dir(), plan["deployment"])
+    result = verify_profile(plan["deployment"])
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 2
 
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
-    prompts = json.loads((root_dir() / "benchmark_prompts.json").read_text(encoding="utf-8"))
+    # benchmark_prompts.json is a user-supplied fixture. Look for it first in
+    # the config dir, then fall back to the CWD so an ad-hoc invocation
+    # ``vllm-stack benchmark`` from a checkout still picks up a sibling file.
+    prompts_path = config_root() / "benchmark_prompts.json"
+    if not prompts_path.exists():
+        prompts_path = Path.cwd() / "benchmark_prompts.json"
+    if not prompts_path.exists():
+        raise SystemExit(
+            f"benchmark_prompts.json not found at {config_root() / 'benchmark_prompts.json'} "
+            f"or {Path.cwd() / 'benchmark_prompts.json'}"
+        )
+    prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
     cfg = config_for_runtime(args)
     env = parse_env_file(runtime_env_path(cfg))
     base_url = args.base_url or f"http://127.0.0.1:{cfg['ports']['litellm']}/v1"
@@ -744,7 +769,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if backend_name(cfg) == "kubeai":
         plan = load_yaml(plan_path(cfg))
         try:
-            deploy_rendered_artifacts(root_dir(), plan["deployment"])
+            deploy_rendered_artifacts(plan["deployment"])
         except CommandError as ex:
             namespace = cfg.get("cluster", {}).get("namespace", "kubeai")
             raise SystemExit(
@@ -778,17 +803,25 @@ def _compose_base_cmd(cfg: dict[str, Any]) -> list[str]:
     ]
 
 
-def _require_compose_backend(cfg: dict[str, Any], cmd_name: str) -> None:
-    if backend_name(cfg) != "compose":
-        raise SystemExit(
-            f"`{cmd_name}` only supports the compose backend. For kubeai, "
-            f"use the equivalent kubectl command (e.g. `kubectl -n <namespace> ...`)."
-        )
+def _kubeai_stub(cmd_name: str) -> None:
+    """Raise for a day-2-ops subcommand that has no kubeai implementation yet.
+
+    These wrappers (logs/ps/restart/pull/start/stop) compose docker-compose
+    invocations and have no kubectl equivalent in this CLI. Until somebody
+    writes one, surface the gap as ``NotImplementedError`` so callers can
+    distinguish "kubeai doesn't do this yet" from a real failure.
+    """
+    raise NotImplementedError(
+        f"`{cmd_name}` is not implemented for the kubeai backend yet. "
+        f"Use the equivalent kubectl command in the meantime "
+        f"(e.g. `kubectl -n <namespace> ...`)."
+    )
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
-    _require_compose_backend(cfg, "logs")
+    if backend_name(cfg) != "compose":
+        _kubeai_stub("logs")
     cmd = _compose_base_cmd(cfg) + ["logs"]
     if getattr(args, "follow", False):
         cmd.append("--follow")
@@ -806,7 +839,8 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 def cmd_ps(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
-    _require_compose_backend(cfg, "ps")
+    if backend_name(cfg) != "compose":
+        _kubeai_stub("ps")
     cmd = _compose_base_cmd(cfg) + ["ps"]
     if getattr(args, "all", False):
         cmd.append("--all")
@@ -821,7 +855,8 @@ def cmd_ps(args: argparse.Namespace) -> int:
 
 def cmd_restart(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
-    _require_compose_backend(cfg, "restart")
+    if backend_name(cfg) != "compose":
+        _kubeai_stub("restart")
     cmd = _compose_base_cmd(cfg) + ["restart"]
     timeout = getattr(args, "timeout", None)
     if timeout is not None:
@@ -831,35 +866,10 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return int(proc.returncode)
 
 
-def cmd_exec(args: argparse.Namespace) -> int:
-    cfg = config_for_runtime(args)
-    _require_compose_backend(cfg, "exec")
-    if not getattr(args, "service", None):
-        raise SystemExit("exec: missing required service name")
-    cmd = _compose_base_cmd(cfg) + ["exec"]
-    if getattr(args, "no_tty", False):
-        cmd.append("-T")
-    user = getattr(args, "user", None)
-    if user:
-        cmd.extend(["--user", user])
-    workdir = getattr(args, "workdir", None)
-    if workdir:
-        cmd.extend(["--workdir", workdir])
-    for kv in getattr(args, "env", None) or []:
-        cmd.extend(["--env", kv])
-    cmd.append(args.service)
-    remainder = getattr(args, "command", None) or []
-    if not remainder:
-        # Default to a shell prompt — that's the 95% use case.
-        remainder = ["sh"]
-    cmd.extend(remainder)
-    proc = subprocess.run(cmd)
-    return int(proc.returncode)
-
-
 def cmd_pull(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
-    _require_compose_backend(cfg, "pull")
+    if backend_name(cfg) != "compose":
+        _kubeai_stub("pull")
     cmd = _compose_base_cmd(cfg) + ["pull"]
     if getattr(args, "quiet", False):
         cmd.append("--quiet")
@@ -872,7 +882,8 @@ def cmd_pull(args: argparse.Namespace) -> int:
 
 def cmd_start(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
-    _require_compose_backend(cfg, "start")
+    if backend_name(cfg) != "compose":
+        _kubeai_stub("start")
     cmd = _compose_base_cmd(cfg) + ["start"]
     cmd.extend(getattr(args, "services", None) or [])
     proc = subprocess.run(cmd)
@@ -881,7 +892,8 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 def cmd_stop(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args)
-    _require_compose_backend(cfg, "stop")
+    if backend_name(cfg) != "compose":
+        _kubeai_stub("stop")
     cmd = _compose_base_cmd(cfg) + ["stop"]
     timeout = getattr(args, "timeout", None)
     if timeout is not None:
@@ -989,16 +1001,17 @@ def cmd_smoke_test(args: argparse.Namespace) -> int:
 
 def cmd_kubeai_sync_resource_profiles(args: argparse.Namespace) -> int:
     cfg = config_for_runtime(args, allow_missing=True)
+    # User-supplied path: anchor on the user's current working directory.
     source = Path(args.from_file)
     if not source.is_absolute():
-        source = root_dir() / source
+        source = Path.cwd() / source
     values_doc = load_yaml(source)
     if "resourceProfiles" not in values_doc:
         raise SystemExit(f"{source} is missing a top-level resourceProfiles map")
-    target = save_kubeai_resource_profiles(root_dir(), values_doc)
+    target = save_kubeai_resource_profiles(values_doc)
     if plan_path(cfg).exists():
         plan_path(cfg).unlink()
-    profiles, _, _ = load_kubeai_resource_profiles(root_dir())
+    profiles, _, _ = load_kubeai_resource_profiles()
     print(f"Wrote {target}")
     print(f"Synced {len(profiles)} KubeAI resource profile(s)")
     return 0
@@ -1035,9 +1048,9 @@ def add_override_args(
             help=(
                 "Directory to write rendered artifacts (docker-compose.yml, "
                 ".env, plan.yaml, kubeai/*) into. Defaults to "
-                "/data/service/docker/vllm-stack/generated when /data/service/docker "
-                "exists, otherwise ./generated. May also be set via the "
-                "VLLM_SERVICE_GENERATED_DIR env var or output.generated_dir in config.yaml."
+                "<data-dir>/generated (data-dir is ~/.cache/vllm_service by "
+                "default). May also be set via the VLLM_SERVICE_GENERATED_DIR "
+                "env var or output.generated_dir in config.yaml."
             ),
         )
     if include_cluster:
@@ -1051,6 +1064,27 @@ def add_override_args(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Manage named serving profiles for local Compose and Kubernetes-backed KubeAI serving."
+    )
+    p.add_argument(
+        "--config-dir",
+        default=None,
+        help=(
+            f"Directory containing config.yaml / models.yaml. Defaults to "
+            f"~/.config/vllm_service (XDG_CONFIG_HOME) or ${CONFIG_DIR_ENV} "
+            f"when set."
+        ),
+    )
+    p.add_argument(
+        "--data-dir",
+        default=None,
+        help=(
+            f"Directory for rendered artifacts (generated/) and bind-mount "
+            f"state (hf-cache, postgres volumes, etc.). Defaults to "
+            f"~/.cache/vllm_service (XDG_CACHE_HOME) or ${DATA_DIR_ENV} "
+            f"when set. Per-knob env vars (VLLM_SERVICE_GENERATED_DIR, "
+            f"VLLM_SERVICE_STATE_ROOT) and config.yaml entries still take "
+            f"precedence."
+        ),
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -1231,28 +1265,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--timeout", type=int, default=None, help="Stop timeout in seconds.")
     s.set_defaults(func=cmd_restart)
 
-    s = sub.add_parser(
-        "exec",
-        help="`docker compose exec <service> [command...]` (defaults to a shell).",
-    )
-    add_override_args(s, include_backend=True, include_compose=True)
-    s.add_argument("service", help="Service name (e.g. postgres-open-webui, open-webui, litellm).")
-    s.add_argument(
-        "command",
-        nargs=argparse.REMAINDER,
-        help="Command to run inside the container. Default: `sh`. Use `--` to separate flags from the command.",
-    )
-    s.add_argument("-T", "--no-tty", action="store_true", help="Disable pseudo-TTY (needed for piping stdin).")
-    s.add_argument("-u", "--user", default=None, help="User to run as inside the container.")
-    s.add_argument("-w", "--workdir", default=None, help="Working directory inside the container.")
-    s.add_argument(
-        "-e", "--env",
-        action="append",
-        default=None,
-        help="Set an env var inside the container. May be repeated. Format: KEY=value.",
-    )
-    s.set_defaults(func=cmd_exec)
-
     s = sub.add_parser("pull", help="`docker compose pull [services...]`.")
     add_override_args(s, include_backend=True, include_compose=True)
     s.add_argument("services", nargs="*", help="Optional service filter (empty = all).")
@@ -1306,6 +1318,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    # Apply --config-dir / --data-dir before any subcommand runs so all
+    # downstream calls into config_root() / data_root() see the override.
+    if getattr(args, "config_dir", None):
+        set_config_root(args.config_dir)
+    if getattr(args, "data_dir", None):
+        set_data_root(args.data_dir)
     return int(args.func(args))
 
 

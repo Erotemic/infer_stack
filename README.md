@@ -41,14 +41,14 @@ python manage.py restart open-webui              # restart specific services
 python manage.py stop                            # stop everything (no remove)
 python manage.py start                           # start back up
 python manage.py pull                            # refresh images
-python manage.py exec open-webui                 # default = `sh` shell
-python manage.py exec open-webui -- env          # explicit command
-python manage.py exec postgres-open-webui -- psql -U openwebui openwebui
 ```
 
-`exec` defaults the inner command to `sh` so you can drop into a shell
-with no extra typing. Use `--` to separate `manage.py` flags from the
-command running inside the container.
+For interactive shells / one-shot commands inside a container, run
+`docker compose -f <generated>/docker-compose.yml --env-file <generated>/.env
+exec <service> <cmd>` directly.
+
+On the KubeAI backend these wrappers raise ``NotImplementedError`` —
+use the equivalent ``kubectl`` commands in the meantime.
 
 ## Inspect a profile before running it
 

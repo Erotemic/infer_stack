@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
 
 from .catalog import canonical_profile_name, normalize_model_catalog, normalize_profile_catalog
@@ -161,12 +160,11 @@ def _resolve_router_aliases(profile: dict[str, Any], services: list[dict[str, An
 
 
 def resolve(
-    root: Path,
     config: dict[str, Any],
     inventory: dict[str, Any] | None = None,
     profile_name: str | None = None,
 ) -> dict[str, Any]:
-    raw_catalogs = merged_catalogs(root, config)
+    raw_catalogs = merged_catalogs(config)
     models = normalize_model_catalog(raw_catalogs.get("models", {}))
     raw_profiles = {**deepcopy(raw_catalogs.get("profiles", {})), **deepcopy(config.get("profiles", {}))}
     profiles = normalize_profile_catalog(raw_profiles, models)
@@ -216,7 +214,7 @@ def resolve(
     }
 
     if backend == "kubeai":
-        resource_profiles, resource_profiles_values, resource_profiles_path = load_kubeai_resource_profiles(root)
+        resource_profiles, resource_profiles_values, resource_profiles_path = load_kubeai_resource_profiles()
         if resource_profiles:
             resource_profile_source = str(resource_profiles_path)
         else:
@@ -242,8 +240,8 @@ def resolve(
             "enable_responses_api_store": bool(profile.get("vllm", {}).get("enable_responses_api_store", False)),
             "logging_level": str(profile.get("vllm", {}).get("logging_level", "INFO")),
         },
-        "state": normalized_state(root, config.get("state", {})),
-        "output": normalized_output(root, config.get("output", {})),
+        "state": normalized_state(config.get("state", {})),
+        "output": normalized_output(config.get("output", {})),
         "cluster": normalized_cluster(config.get("cluster", {})),
         "resource_profiles": resource_profiles,
         "resource_profiles_values": resource_profiles_values,

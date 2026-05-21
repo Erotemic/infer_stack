@@ -5,7 +5,8 @@ from pathlib import Path
 
 import yaml
 
-from .config import GENERATED_DIR_NAME, normalized_output
+from .config import normalized_output
+from .paths import data_root
 from .profile_runtime import default_base_url, export_transport_config
 
 # Transitional compatibility layer:
@@ -14,33 +15,31 @@ from .profile_runtime import default_base_url, export_transport_config
 # becomes the primary path.
 
 
-def _resolve_generated_dir(root: Path, generated_dir: Path | None) -> Path:
+def _resolve_generated_dir(generated_dir: Path | None) -> Path:
     if generated_dir is not None:
         p = Path(generated_dir)
         if not p.is_absolute():
-            p = root / p
+            p = data_root() / p
         return p
-    return root / GENERATED_DIR_NAME
+    return Path(normalized_output(None)["generated_dir"])
 
 
-def benchmark_bundle_dir(root: Path, profile_name: str, *, generated_dir: Path | None = None) -> Path:
-    return _resolve_generated_dir(root, generated_dir) / "benchmark" / profile_name
+def benchmark_bundle_dir(profile_name: str, *, generated_dir: Path | None = None) -> Path:
+    return _resolve_generated_dir(generated_dir) / "benchmark" / profile_name
 
 
-def helm_bundle_dir(root: Path, profile_name: str, *, generated_dir: Path | None = None) -> Path:
-    return _resolve_generated_dir(root, generated_dir) / "helm" / profile_name
+def helm_bundle_dir(profile_name: str, *, generated_dir: Path | None = None) -> Path:
+    return _resolve_generated_dir(generated_dir) / "helm" / profile_name
 
 
-def _generated_dir_for_deployment(root: Path, deployment: dict) -> Path:
-    output_cfg = deployment.get("output")
-    if output_cfg:
-        return Path(normalized_output(root, output_cfg)["generated_dir"])
-    return root / GENERATED_DIR_NAME
+def _generated_dir_for_deployment(deployment: dict) -> Path:
+    return Path(normalized_output(deployment.get("output"))["generated_dir"])
 
 
-def _maybe_repo_relative(root: Path, target: Path) -> str:
+def _maybe_data_relative(target: Path) -> str:
+    """Format ``target`` as a path relative to ``data_root()`` when possible."""
     try:
-        return str(target.resolve().relative_to(root.resolve()))
+        return str(target.resolve().relative_to(data_root().resolve()))
     except ValueError:
         return str(target.resolve())
 
@@ -116,7 +115,7 @@ def _write_legacy_alias(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | None = None, output_dir: Path | None = None) -> dict:
+def export_benchmark_bundle(deployment: dict, *, base_url: str | None = None, output_dir: Path | None = None) -> dict:
     services = deployment.get("services", [])
     if len(services) != 1:
         raise ValueError("Benchmark bundle export currently expects a single-service serving profile")
@@ -125,11 +124,10 @@ def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | Non
         raise ValueError("Cannot export a benchmark bundle for a profile with no resolved services")
 
     default_dir = output_dir is None
-    deployment_generated = _generated_dir_for_deployment(root, deployment)
+    deployment_generated = _generated_dir_for_deployment(deployment)
     bundle_dir = (
         output_dir
         or benchmark_bundle_dir(
-            root,
             deployment["serving_profile"]["name"],
             generated_dir=deployment_generated,
         )
@@ -146,7 +144,7 @@ def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | Non
         "deployment_name": transport["deployment_name"],
         "suggested_client_class": transport["client_class"],
         "model_deployments_path": str(model_deployments_path),
-        "model_deployments_repo_relative": _maybe_repo_relative(root, model_deployments_path),
+        "model_deployments_repo_relative": _maybe_data_relative(model_deployments_path),
     }
     bundle = {
         "target": "crfm_helm_benchmark",
@@ -183,7 +181,7 @@ def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | Non
     bundle_path = bundle_dir / "bundle.yaml"
     bundle_path.write_text(yaml.safe_dump(bundle, sort_keys=False), encoding="utf-8")
 
-    model_deployments_fpath = _maybe_repo_relative(root, model_deployments_path)
+    model_deployments_fpath = _maybe_data_relative(model_deployments_path)
     benchmark_smoke_manifest = _manifest_template(
         experiment_name=f"{deployment['serving_profile']['name']}-smoke",
         description=f"Machine-local benchmark smoke manifest for {deployment['serving_profile']['public_name']}.",
@@ -213,7 +211,6 @@ def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | Non
     legacy_bundle_dir = None
     if default_dir:
         legacy_bundle_dir = helm_bundle_dir(
-            root,
             deployment["serving_profile"]["name"],
             generated_dir=deployment_generated,
         ).resolve()
@@ -241,5 +238,5 @@ def export_benchmark_bundle(root: Path, deployment: dict, *, base_url: str | Non
     }
 
 
-def export_helm_bundle(root: Path, deployment: dict, *, base_url: str | None = None, output_dir: Path | None = None) -> dict:
-    return export_benchmark_bundle(root, deployment, base_url=base_url, output_dir=output_dir)
+def export_helm_bundle(deployment: dict, *, base_url: str | None = None, output_dir: Path | None = None) -> dict:
+    return export_benchmark_bundle(deployment, base_url=base_url, output_dir=output_dir)

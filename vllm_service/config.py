@@ -9,6 +9,7 @@ import yaml
 
 from .catalog import normalize_model_catalog, normalize_profile_catalog
 from .hardware import detect_inventory
+from .paths import config_root, data_root
 
 CONFIG_FILE = Path("config.yaml")
 MODELS_FILE = Path("models.yaml")
@@ -21,27 +22,7 @@ GENERATED_DIR_NAME = "generated"
 PLAN_FILENAME = "plan.yaml"
 KUBEAI_GENERATED_SUBDIR = "kubeai"
 KUBEAI_VALUES_FILENAME = "kubeai-values.yaml"
-
-# Legacy module-level constants kept for callers that still treat
-# ``generated/`` as the canonical relative output location (e.g.
-# ``cli_scfg.py`` and historical docs/tests). New code should use the
-# ``generated_dir_for_config`` / ``plan_path_for_config`` helpers below.
-GENERATED_DIR = Path(GENERATED_DIR_NAME)
-PLAN_FILE = GENERATED_DIR / PLAN_FILENAME
-KUBEAI_GENERATED_DIR = GENERATED_DIR / KUBEAI_GENERATED_SUBDIR
-KUBEAI_VALUES_FILE = KUBEAI_GENERATED_DIR / KUBEAI_VALUES_FILENAME
-KUBEAI_LOCAL_VALUES_FILE = Path("kubeai-values.local.yaml")
-
-RESOLVED_FILE = PLAN_FILE
-LOCK_FILE = PLAN_FILE
-
-# Default machine-wide target for rendered artifacts. The parent
-# (``/data/service/docker``) existing is treated as the signal that this
-# host follows the shared-storage convention used for ``state.*`` paths
-# (see ``_default_storage_root``); when it doesn't, we fall back to a
-# per-cwd ``generated/`` directory so tests and ad-hoc tooling keep
-# working without any new configuration.
-DEFAULT_GENERATED_ROOT = Path("/data/service/docker/vllm-stack/generated")
+KUBEAI_LOCAL_VALUES_FILENAME = "kubeai-values.local.yaml"
 
 PINNED_IMAGES = {
     "postgres": "postgres:16.8",
@@ -58,10 +39,8 @@ DEFAULT_PORTS = {
 
 
 def _default_storage_root() -> Path:
-    preferred = Path("/data/service/docker/vllm-stack")
-    if preferred.parent.exists():
-        return preferred
-    return Path.cwd() / "state"
+    """Default parent for ``state.*`` paths (hf-cache, postgres volumes, etc.)."""
+    return data_root()
 
 
 def default_state_paths() -> dict[str, str]:
@@ -77,45 +56,44 @@ def default_state_paths() -> dict[str, str]:
 
 
 def _default_generated_dir() -> Path:
-    if DEFAULT_GENERATED_ROOT.parent.exists():
-        return DEFAULT_GENERATED_ROOT
-    return Path.cwd() / GENERATED_DIR_NAME
+    return data_root() / GENERATED_DIR_NAME
 
 
 def default_output_config() -> dict[str, str]:
     return {"generated_dir": str(_default_generated_dir())}
 
 
-def normalized_output(root: Path, output_cfg: dict[str, Any] | None) -> dict[str, str]:
+def normalized_output(output_cfg: dict[str, Any] | None) -> dict[str, str]:
     """Resolve the output section to absolute paths.
 
-    Relative ``generated_dir`` values are anchored on ``root`` so that
-    in-cwd configs and tests continue to point at ``<root>/generated``
-    without needing to encode an absolute path.
+    Relative ``generated_dir`` values are anchored on ``data_root()`` so
+    that a config that says ``generated_dir: generated`` lands at
+    ``<data_root>/generated`` regardless of where ``vllm-stack`` is
+    invoked from.
     """
     normalized = deepcopy(default_output_config())
     raw = (output_cfg or {}).get("generated_dir")
     candidate = Path(raw) if raw else Path(normalized["generated_dir"])
     if not candidate.is_absolute():
-        candidate = root / candidate
+        candidate = data_root() / candidate
     normalized["generated_dir"] = str(candidate)
     return normalized
 
 
-def generated_dir_for_config(root: Path, cfg: dict[str, Any]) -> Path:
-    return Path(normalized_output(root, cfg.get("output", {}))["generated_dir"])
+def generated_dir_for_config(cfg: dict[str, Any]) -> Path:
+    return Path(normalized_output(cfg.get("output", {}))["generated_dir"])
 
 
-def plan_path_for_config(root: Path, cfg: dict[str, Any]) -> Path:
-    return generated_dir_for_config(root, cfg) / PLAN_FILENAME
+def plan_path_for_config(cfg: dict[str, Any]) -> Path:
+    return generated_dir_for_config(cfg) / PLAN_FILENAME
 
 
-def kubeai_generated_dir_for_config(root: Path, cfg: dict[str, Any]) -> Path:
-    return generated_dir_for_config(root, cfg) / KUBEAI_GENERATED_SUBDIR
+def kubeai_generated_dir_for_config(cfg: dict[str, Any]) -> Path:
+    return generated_dir_for_config(cfg) / KUBEAI_GENERATED_SUBDIR
 
 
-def kubeai_values_path_for_config(root: Path, cfg: dict[str, Any]) -> Path:
-    return kubeai_generated_dir_for_config(root, cfg) / KUBEAI_VALUES_FILENAME
+def kubeai_values_path_for_config(cfg: dict[str, Any]) -> Path:
+    return kubeai_generated_dir_for_config(cfg) / KUBEAI_VALUES_FILENAME
 
 
 def default_cluster_config() -> dict[str, Any]:
@@ -151,12 +129,9 @@ def default_resource_profiles() -> dict[str, Any]:
     }
 
 
-def kubeai_values_path(root: Path) -> Path:
-    return root / KUBEAI_VALUES_FILE
-
-
-def kubeai_local_values_path(root: Path) -> Path:
-    return root / KUBEAI_LOCAL_VALUES_FILE
+def kubeai_local_values_path() -> Path:
+    """Location of the user-editable ``kubeai-values.local.yaml``."""
+    return config_root() / KUBEAI_LOCAL_VALUES_FILENAME
 
 
 def resource_profiles_to_kubeai_values(resource_profiles: dict[str, Any] | None) -> dict[str, Any]:
@@ -188,28 +163,34 @@ def kubeai_values_to_resource_profiles(values_doc: dict[str, Any] | None) -> dic
     return profiles
 
 
-def load_kubeai_resource_profiles(root: Path) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    path = kubeai_local_values_path(root)
+def load_kubeai_resource_profiles() -> tuple[dict[str, Any], dict[str, Any], Path]:
+    path = kubeai_local_values_path()
     if not path.exists():
         return {}, {}, path
     values_doc = load_yaml(path)
     return kubeai_values_to_resource_profiles(values_doc), values_doc, path
 
 
-def save_kubeai_resource_profiles(root: Path, values_doc: dict[str, Any]) -> Path:
-    path = kubeai_local_values_path(root)
+def save_kubeai_resource_profiles(values_doc: dict[str, Any]) -> Path:
+    path = kubeai_local_values_path()
     save_yaml(path, values_doc)
     return path
 
 
-def normalized_state(root: Path, state: dict[str, Any] | None) -> dict[str, str]:
+def normalized_state(state: dict[str, Any] | None) -> dict[str, str]:
+    """Resolve ``state.*`` to absolute paths.
+
+    Relative values are anchored on ``data_root()`` so that bind-mount
+    locations don't depend on where ``vllm-stack`` was invoked from.
+    """
     normalized = deepcopy(default_state_paths())
+    anchor = data_root()
     for key, value in (state or {}).items():
         if value in (None, ""):
             continue
         p = Path(value)
         if not p.is_absolute():
-            p = root / p
+            p = anchor / p
         normalized[key] = str(p)
     return normalized
 
@@ -250,19 +231,22 @@ def deep_merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def merged_catalogs(root: Path, config: dict[str, Any]) -> dict[str, Any]:
+def merged_catalogs(config: dict[str, Any]) -> dict[str, Any]:
     built_models = builtin_models_catalog() if config.get("catalog", {}).get("builtin_models", True) else {}
     built_profiles = builtin_profiles_catalog() if config.get("catalog", {}).get("builtin_profiles", True) else {}
-    user_path = root / config.get("catalog", {}).get("user_models_file", str(MODELS_FILE))
-    user = load_yaml(user_path) if user_path.exists() else {}
+    raw_user_models = config.get("catalog", {}).get("user_models_file", str(MODELS_FILE))
+    user_models_path = Path(raw_user_models)
+    if not user_models_path.is_absolute():
+        user_models_path = config_root() / user_models_path
+    user = load_yaml(user_models_path) if user_models_path.exists() else {}
     return {
         "models": deep_merge(built_models.get("models", {}), user.get("models", {})),
         "profiles": deep_merge(built_profiles.get("profiles", {}), user.get("profiles", {})),
     }
 
 
-def normalized_catalogs(root: Path, config: dict[str, Any]) -> dict[str, Any]:
-    catalogs = merged_catalogs(root, config)
+def normalized_catalogs(config: dict[str, Any]) -> dict[str, Any]:
+    catalogs = merged_catalogs(config)
     models = normalize_model_catalog(catalogs.get("models", {}))
     raw_profiles = {**catalogs.get("profiles", {}), **deepcopy(config.get("profiles", {}))}
     profiles = normalize_profile_catalog(raw_profiles, models)

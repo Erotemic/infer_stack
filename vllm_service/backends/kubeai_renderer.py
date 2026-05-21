@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from ..config import GENERATED_DIR_NAME, KUBEAI_GENERATED_SUBDIR, normalized_output
+from ..config import KUBEAI_GENERATED_SUBDIR, normalized_output
 from ..diff_prompt import confirm_writes
 from ..profile_runtime import vllm_args
 
@@ -61,7 +61,7 @@ def _model_doc(service: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
-def render_kubeai_artifacts(root: Path, lock_data: dict, *, assume_yes: bool = True) -> None:
+def render_kubeai_artifacts(lock_data: dict, *, assume_yes: bool = True) -> None:
     """Render the KubeAI backend artifacts.
 
     When ``assume_yes`` is False, all rendered YAML files are diffed against
@@ -71,14 +71,7 @@ def render_kubeai_artifacts(root: Path, lock_data: dict, *, assume_yes: bool = T
     deployment = lock_data.get("deployment", {})
     cluster = deployment.get("cluster", {})
     namespace = cluster.get("namespace", "kubeai")
-    # See compose_renderer for the rationale on this fallback: hand-built
-    # deployment dicts get the historical ``<root>/generated/kubeai`` layout
-    # so they don't need to know about ``output.generated_dir``.
-    output_cfg = deployment.get("output")
-    if output_cfg:
-        output_root = Path(normalized_output(root, output_cfg)["generated_dir"])
-    else:
-        output_root = root / GENERATED_DIR_NAME
+    output_root = Path(normalized_output(deployment.get("output"))["generated_dir"])
     generated = output_root / KUBEAI_GENERATED_SUBDIR
     generated.mkdir(parents=True, exist_ok=True)
 

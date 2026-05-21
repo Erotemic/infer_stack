@@ -3,21 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .config import GENERATED_DIR_NAME, KUBEAI_GENERATED_SUBDIR, normalized_output
+from .config import KUBEAI_GENERATED_SUBDIR, normalized_output
 from .exporters import benchmark_bundle_dir, helm_bundle_dir
 from .profile_runtime import default_base_url
 
 
-def verify_profile(root: Path, deployment: dict[str, Any]) -> dict[str, Any]:
+def verify_profile(deployment: dict[str, Any]) -> dict[str, Any]:
     service = deployment.get("services", [])[0] if deployment.get("services") else {}
     profile_name = deployment["serving_profile"]["name"]
-    output_cfg = deployment.get("output")
-    if output_cfg:
-        output_root = Path(normalized_output(root, output_cfg)["generated_dir"])
-    else:
-        output_root = root / GENERATED_DIR_NAME
-    bundle_dir = benchmark_bundle_dir(root, profile_name, generated_dir=output_root)
-    legacy_bundle_dir = helm_bundle_dir(root, profile_name, generated_dir=output_root)
+    output_root = Path(normalized_output(deployment.get("output"))["generated_dir"])
+    bundle_dir = benchmark_bundle_dir(profile_name, generated_dir=output_root)
+    legacy_bundle_dir = helm_bundle_dir(profile_name, generated_dir=output_root)
     expected = {
         "public_name": deployment["serving_profile"]["public_name"],
         "logical_model_name": service.get("logical_model_name", ""),

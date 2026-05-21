@@ -10,22 +10,34 @@ from pathlib import Path
 import yaml
 
 from vllm_service import cli as cli_mod
-from vllm_service.config import kubeai_local_values_path
 
 
 MANAGE_PY = Path(__file__).resolve().parents[1] / "manage.py"
 
 
+def _anchor_paths(tmp_path: Path, monkeypatch) -> Path:
+    """Point both config_root() and data_root() at ``tmp_path``.
+
+    ``config_root()`` / ``data_root()`` read these env vars fresh on every
+    call, so this is enough for in-process ``cli_mod.cmd_*`` invocations to
+    see the same layout as the subprocess ones launched via ``run_cli``.
+    ``monkeypatch.setenv`` auto-restores at test teardown.
+    """
+    monkeypatch.setenv("VLLM_SERVICE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("VLLM_SERVICE_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
 def run_cli(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     full_env = os.environ.copy()
-    # Anchor rendered artifacts under tmp_path so tests on machines whose
-    # /data/service/docker tree exists don't pick up the shared default.
-    full_env.setdefault("VLLM_SERVICE_GENERATED_DIR", str(tmp_path / "generated"))
+    # Anchor config + rendered artifacts under tmp_path so tests are
+    # independent of the user's ~/.config and ~/.cache directories.
+    full_env.setdefault("VLLM_SERVICE_CONFIG_DIR", str(tmp_path))
+    full_env.setdefault("VLLM_SERVICE_DATA_DIR", str(tmp_path))
     if env:
         full_env.update(env)
     return subprocess.run(
         [sys.executable, str(MANAGE_PY), *args],
-        cwd=tmp_path,
         env=full_env,
         text=True,
         capture_output=True,
@@ -112,7 +124,7 @@ def test_setup_kubeai_with_resource_profiles_file_syncs_canonical_values(tmp_pat
         "--resource-profiles-file",
         str(source),
     )
-    values_doc = yaml.safe_load(kubeai_local_values_path(tmp_path).read_text())
+    values_doc = yaml.safe_load((tmp_path / "kubeai-values.local.yaml").read_text())
     assert "gpu-single-default" in values_doc["resourceProfiles"]
     assert values_doc["resourceProfiles"]["gpu-single-default"]["extraField"] == "keep-me"
 
@@ -193,7 +205,7 @@ def test_kubeai_config_fallback_still_works_before_and_after_render_without_sync
     )
     run_cli(tmp_path, "validate", "--simulate-hardware", "1x96")
     run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
-    assert not kubeai_local_values_path(tmp_path).exists()
+    assert not (tmp_path / "kubeai-values.local.yaml").exists()
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     cfg["resource_profiles"]["gpu-single-default"]["node_selector"] = {"example.com/profile-source": "config-after-render"}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
@@ -243,12 +255,12 @@ def test_kubeai_local_values_change_marks_render_stale(tmp_path: Path, monkeypat
         str(source),
     )
     run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
     assert cli_mod.render_is_stale() is False
     time.sleep(1.1)
-    values_doc = yaml.safe_load(kubeai_local_values_path(tmp_path).read_text())
+    values_doc = yaml.safe_load((tmp_path / "kubeai-values.local.yaml").read_text())
     values_doc["resourceProfiles"]["gpu-single-default"]["nodeSelector"]["example.com/profile-source"] = "updated-local"
-    kubeai_local_values_path(tmp_path).write_text(yaml.safe_dump(values_doc, sort_keys=False), encoding="utf-8")
+    (tmp_path / "kubeai-values.local.yaml").write_text(yaml.safe_dump(values_doc, sort_keys=False), encoding="utf-8")
     assert cli_mod.render_is_stale() is True
 
 
@@ -268,16 +280,16 @@ def test_kubeai_deploy_rerenders_from_updated_local_values(tmp_path: Path, monke
         str(source),
     )
     run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
 
-    values_doc = yaml.safe_load(kubeai_local_values_path(tmp_path).read_text())
+    values_doc = yaml.safe_load((tmp_path / "kubeai-values.local.yaml").read_text())
     time.sleep(1.1)
     values_doc["resourceProfiles"]["gpu-single-default"]["nodeSelector"]["example.com/profile-source"] = "deploy-rerender"
-    kubeai_local_values_path(tmp_path).write_text(yaml.safe_dump(values_doc, sort_keys=False), encoding="utf-8")
+    (tmp_path / "kubeai-values.local.yaml").write_text(yaml.safe_dump(values_doc, sort_keys=False), encoding="utf-8")
 
     observed: dict[str, object] = {}
 
-    def fake_deploy_rendered_artifacts(root: Path, deployment: dict) -> None:
+    def fake_deploy_rendered_artifacts(deployment: dict) -> None:
         observed["source"] = deployment["resource_profiles_source"]
 
     monkeypatch.setattr(cli_mod, "deploy_rendered_artifacts", fake_deploy_rendered_artifacts)
@@ -297,7 +309,7 @@ def test_kubeai_deploy_rerenders_from_updated_local_values(tmp_path: Path, monke
     )
     cli_mod.cmd_deploy(args)
     generated_values = yaml.safe_load((tmp_path / "generated" / "kubeai" / "kubeai-values.yaml").read_text())
-    assert observed["source"] == str(kubeai_local_values_path(tmp_path))
+    assert observed["source"] == str((tmp_path / "kubeai-values.local.yaml"))
     assert generated_values["resourceProfiles"]["gpu-single-default"]["nodeSelector"]["example.com/profile-source"] == "deploy-rerender"
 
 
@@ -314,11 +326,10 @@ def test_switch_apply_persists_only_active_profile_and_uses_transient_overrides(
         "--compose-cmd",
         "docker compose",
     )
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
     observed: dict[str, object] = {}
 
-    def fake_deploy_rendered_artifacts(root: Path, deployment: dict) -> None:
-        observed["root"] = root
+    def fake_deploy_rendered_artifacts(deployment: dict) -> None:
         observed["backend"] = deployment["backend"]
         observed["namespace"] = deployment["cluster"]["namespace"]
         observed["profile"] = deployment["serving_profile"]["public_name"]
@@ -363,7 +374,7 @@ def test_switch_apply_compose_recreates_router_when_config_changes(
         "gpt-oss-20b-chat",
     )
     run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
 
     invocations: list[list[str]] = []
 
@@ -407,7 +418,7 @@ def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
         "gpt-oss-20b-chat",
     )
     run_cli(tmp_path, "render", "--simulate-hardware", "1x96")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
 
     state_root = tmp_path / "state"
     sentinel_open_webui = state_root / "open-webui" / "sentinel.txt"
@@ -450,7 +461,7 @@ def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
 
 def test_kubeai_status_namespace_error_is_actionable(tmp_path: Path, monkeypatch) -> None:
     run_cli(tmp_path, "setup", "--backend", "kubeai", "--profile", "qwen2-5-7b-instruct-turbo-default", "--namespace", "default")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
 
     def fake_status(namespace: str) -> None:
         raise cli_mod.CommandError(f"Command failed in namespace {namespace}")
@@ -519,7 +530,7 @@ def _setup_compose(tmp_path: Path, profile: str) -> None:
 
 def test_smoke_test_uses_chat_endpoint_for_chat_profiles(tmp_path: Path, monkeypatch) -> None:
     _setup_compose(tmp_path, "qwen2-5-7b-instruct-turbo-default")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
     posted: dict[str, object] = {}
 
     def fake_get(url, **kwargs):
@@ -542,7 +553,7 @@ def test_smoke_test_uses_completions_endpoint_for_completions_profiles(
     tmp_path: Path, monkeypatch
 ) -> None:
     _setup_compose(tmp_path, "helm-pythia-1b-v0")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
     posted: dict[str, object] = {}
 
     def fake_get(url, **kwargs):
@@ -566,7 +577,7 @@ def test_smoke_test_protocol_override_forces_completions(
     tmp_path: Path, monkeypatch
 ) -> None:
     _setup_compose(tmp_path, "qwen2-5-7b-instruct-turbo-default")
-    monkeypatch.chdir(tmp_path)
+    _anchor_paths(tmp_path, monkeypatch)
     posted: dict[str, object] = {}
 
     def fake_get(url, **kwargs):

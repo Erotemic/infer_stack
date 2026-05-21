@@ -19,21 +19,18 @@ from .config import (
 )
 from .docker_utils import compose_down, compose_up
 from .env_utils import parse_env_file
+from .paths import config_root
 from .renderer import render_from_lock
 from .resolver import resolve
 from .validator import validate_resolved
 
 
-def root_dir() -> Path:
-    return Path.cwd()
-
-
 def config_path() -> Path:
-    return root_dir() / CONFIG_FILE
+    return config_root() / CONFIG_FILE
 
 
 def models_path() -> Path:
-    return root_dir() / MODELS_FILE
+    return config_root() / MODELS_FILE
 
 
 def _safe_cfg() -> dict[str, Any]:
@@ -45,12 +42,12 @@ def _safe_cfg() -> dict[str, Any]:
 
 def generated_dir(cfg: dict[str, Any] | None = None) -> Path:
     cfg = cfg if cfg is not None else _safe_cfg()
-    return generated_dir_for_config(root_dir(), cfg)
+    return generated_dir_for_config(cfg)
 
 
 def plan_path(cfg: dict[str, Any] | None = None) -> Path:
     cfg = cfg if cfg is not None else _safe_cfg()
-    return plan_path_for_config(root_dir(), cfg)
+    return plan_path_for_config(cfg)
 
 
 def load_config() -> dict[str, Any]:
@@ -61,7 +58,7 @@ def load_config() -> dict[str, Any]:
 
 
 def runtime_dir_for_config(cfg: dict) -> Path:
-    state = normalized_state(root_dir(), cfg.get("state", {}))
+    state = normalized_state(cfg.get("state", {}))
     return Path(state["runtime"])
 
 
@@ -85,7 +82,7 @@ def build_plan(
     profile_name: str | None = None,
     allow_unsupported: bool = False,
 ) -> dict[str, Any]:
-    resolved = resolve(root_dir(), cfg, profile_name=profile_name)
+    resolved = resolve(cfg, profile_name=profile_name)
     report = validate_resolved(resolved)
     return {
         "schema_version": 1,
@@ -224,7 +221,7 @@ class RenderCLI(scfg.DataConfig):
         )
         ensure_renderable(plan)
         save_plan(plan, cfg)
-        render_from_lock(root_dir(), plan, assume_yes=bool(config.yes))
+        render_from_lock(plan, assume_yes=bool(config.yes))
         print(f"Wrote {plan_path(cfg)}")
         print(f"Rendered Compose into {generated_dir(cfg)}")
         print(f"Rendered mounted runtime files into {runtime_dir_for_config(cfg)}")
@@ -292,7 +289,7 @@ class SwitchCLI(scfg.DataConfig):
         )
         ensure_renderable(plan)
         save_plan(plan, cfg)
-        render_from_lock(root_dir(), plan, assume_yes=bool(config.yes))
+        render_from_lock(plan, assume_yes=bool(config.yes))
         if config.apply:
             compose_down(
                 cfg["runtime"]["compose_cmd"],
@@ -319,7 +316,7 @@ class ExplainCLI(scfg.DataConfig):
         if config.file:
             target = Path(config.file)
             if not target.is_absolute():
-                target = root_dir() / target
+                target = Path.cwd() / target
         else:
             target = plan_path()
         if not target.exists():
@@ -336,7 +333,10 @@ class BenchmarkCLI(scfg.DataConfig):
     @classmethod
     def main(cls, argv=1, **kwargs):
         config = cls.cli(argv=argv, data=kwargs)
-        prompts = json.loads((root_dir() / "benchmark_prompts.json").read_text(encoding="utf-8"))
+        prompts_path = config_root() / "benchmark_prompts.json"
+        if not prompts_path.exists():
+            prompts_path = Path.cwd() / "benchmark_prompts.json"
+        prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
         cfg = load_config()
         env = parse_env_file(runtime_env_path(cfg))
         base_url = config.base_url or f"http://127.0.0.1:{cfg['ports']['litellm']}/v1"

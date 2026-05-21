@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from vllm_service.backends.compose_renderer import render_compose_artifacts
@@ -10,8 +11,24 @@ from vllm_service.config import initial_config
 from vllm_service.config import save_yaml
 from vllm_service.contracts import build_profile_contract, load_profile_contract
 from vllm_service.hardware import simulate_inventory
+from vllm_service.paths import set_config_root, set_data_root
 from vllm_service.resolver import resolve
 from vllm_service.validator import validate_resolved
+
+
+@pytest.fixture(autouse=True)
+def _anchor_paths(tmp_path: Path):
+    """Anchor config_root() / data_root() at tmp_path for every test.
+
+    The resolver and renderers read from data_root() (for generated/
+    and state/), and load_profile_contract() reads from config_root().
+    Pointing both at tmp_path keeps each test hermetic.
+    """
+    set_config_root(tmp_path)
+    set_data_root(tmp_path)
+    yield
+    set_config_root(None)
+    set_data_root(None)
 
 
 def _cfg(tmp_path: Path, *, backend: str = "compose") -> dict:
@@ -25,11 +42,8 @@ def _cfg(tmp_path: Path, *, backend: str = "compose") -> dict:
         "runtime": "state/runtime",
     }
     cfg["ports"] = {"litellm": 14000, "open_webui": 13000, "postgres": 15432}
-    # Pin rendered artifacts under tmp_path. Without this, the resolver
-    # would emit deployment["output"]["generated_dir"] pointing at the
-    # machine-wide default (/data/service/docker/vllm-stack/generated)
-    # on hosts where that path tree already exists, breaking these tests'
-    # ``tmp_path / "generated"`` assertions.
+    # Relative paths in output.generated_dir / state.* anchor on data_root(),
+    # which the autouse fixture pins to tmp_path.
     cfg["output"] = {"generated_dir": "generated"}
     return cfg
 
@@ -43,7 +57,7 @@ def _write_root_config(tmp_path: Path, *, backend: str = "compose") -> Path:
 
 def _deployment(tmp_path: Path, profile_name: str, *, backend: str = "compose", inventory: str = "4x96") -> dict:
     cfg = _cfg(tmp_path, backend=backend)
-    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory(inventory), profile_name=profile_name)
+    deployment = resolve(cfg, inventory=simulate_inventory(inventory), profile_name=profile_name)
     validated = validate_resolved(deployment)
     assert validated["ok"], validated
     return deployment
@@ -64,7 +78,7 @@ def test_legacy_profile_alias_resolves_to_canonical_profile(tmp_path: Path) -> N
 
 def test_kubeai_render_uses_profile_identity(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "qwen2-72b-instruct-tp2-balanced", backend="kubeai")
-    render_kubeai_artifacts(tmp_path, {"deployment": deployment})
+    render_kubeai_artifacts({"deployment": deployment})
     models = list(yaml.safe_load_all((tmp_path / "generated" / "kubeai" / "models.yaml").read_text()))
     assert models[0]["metadata"]["name"] == "qwen2-72b-instruct-tp2-balanced"
     assert models[0]["metadata"]["annotations"]["vllm-service/logical-model-name"] == "qwen/qwen2-72b-instruct"
@@ -75,7 +89,7 @@ def test_kubeai_render_uses_profile_identity(tmp_path: Path) -> None:
 
 def test_compose_render_includes_profile_labels_and_aliases(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
     assert 'vllm_service.public_name: "gpt-oss-20b-chat"' in compose_text
@@ -106,10 +120,9 @@ def test_profile_contract_for_kubeai_uses_public_profile_name(tmp_path: Path) ->
 
 
 def test_load_profile_contract_uses_public_loader_for_qwen(tmp_path: Path) -> None:
-    root = _write_root_config(tmp_path)
+    _write_root_config(tmp_path)
     contract = load_profile_contract(
         "qwen2-72b-instruct-tp2-balanced",
-        root=root,
         simulate_hardware_spec="2x96",
     )
     assert contract["profile"]["public_name"] == "qwen2-72b-instruct-tp2-balanced"
@@ -137,7 +150,7 @@ def _split_compose_blocks(compose_text: str) -> dict[str, str]:
 
 def test_compose_uses_separate_postgres_services(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
 
@@ -161,7 +174,7 @@ def test_compose_uses_separate_postgres_services(tmp_path: Path) -> None:
 
 def test_compose_router_and_ui_point_at_their_own_postgres(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
 
@@ -175,7 +188,7 @@ def test_compose_router_and_ui_point_at_their_own_postgres(tmp_path: Path) -> No
 
 def test_compose_env_uses_distinct_db_names_users_and_passwords(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     env_text = (tmp_path / "generated" / ".env").read_text()
     env_kv = dict(
         line.split("=", 1)
@@ -208,7 +221,7 @@ def test_env_rewrite_preserves_unknown_key_value_pairs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     text = (generated / ".env").read_text()
     assert "VERBOSE=1" in text
     assert "CUSTOM_THING=abc" in text
@@ -227,7 +240,7 @@ def test_env_rewrite_preserves_unknown_key_value_pairs(tmp_path: Path) -> None:
 def test_helm_pythia_profiles_render_as_completions(tmp_path: Path) -> None:
     for profile_name in ("helm-pythia-6.9b", "helm-pythia-2.8b-v0", "helm-pythia-1b-v0"):
         deployment = _deployment(tmp_path, profile_name, inventory="1x96")
-        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        render_compose_artifacts({"deployment": deployment})
         compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
         assert 'vllm_service.protocol_mode: "completions"' in compose_text, profile_name
         assert deployment["services"][0]["protocol_mode"] == "completions", profile_name
@@ -261,7 +274,7 @@ def test_validation_rejects_chat_protocol_for_completions_only_model(tmp_path: P
             "protocol_mode": "chat",
         }
     }
-    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="broken-pythia-chat")
+    deployment = resolve(cfg, inventory=simulate_inventory("1x96"), profile_name="broken-pythia-chat")
     report = validate_resolved(deployment)
     assert report["ok"] is False
     joined = " | ".join(report["errors"])
@@ -279,7 +292,7 @@ def test_validation_accepts_chat_for_chat_capable_profile(tmp_path: Path) -> Non
 
 def test_litellm_completions_profile_uses_text_completion_provider(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "helm-pythia-6.9b", inventory="1x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
     assert "text-completion-openai/eleutherai/pythia-6.9b" in litellm_text
     # Make sure we're not also emitting the bare openai/ provider for the same model.
@@ -294,7 +307,7 @@ def test_litellm_completions_profile_uses_text_completion_provider(tmp_path: Pat
 
 def test_litellm_chat_profile_does_not_use_text_completion_provider(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "qwen2-5-7b-instruct-turbo-default", inventory="1x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
     assert "text-completion-openai" not in litellm_text
     assert "openai/qwen/qwen2.5-7b-instruct-turbo" in litellm_text
@@ -310,7 +323,7 @@ def test_pythia_routing_end_to_end_unit_check(tmp_path: Path) -> None:
     protocol picker should agree that this profile is completions.
     """
     deployment = _deployment(tmp_path, "helm-pythia-6.9b", inventory="1x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
     cfg_doc = yaml.safe_load(litellm_text)
@@ -330,7 +343,7 @@ def test_pythia_routing_end_to_end_unit_check(tmp_path: Path) -> None:
 
 def test_qwen3_6_reasoning_profile_emits_reasoning_flags(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     qwen_block = compose_text.split("vllm-qwen36-35b:", 1)[1].split("vllm-pythia-69b:", 1)[0]
     assert "--reasoning-parser" in qwen_block
@@ -341,7 +354,7 @@ def test_qwen3_6_reasoning_profile_emits_reasoning_flags(tmp_path: Path) -> None
 
 def test_pythia_profile_does_not_emit_reasoning_flags(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "helm-pythia-6.9b", inventory="1x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     assert "--enable-reasoning" not in compose_text
     assert "--reasoning-parser" not in compose_text
@@ -358,7 +371,7 @@ def test_mixed_profile_qwen_renders_tool_call_flags_pythia_does_not(tmp_path: Pa
     Pythia services must not get any tool-call flags.
     """
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
 
@@ -390,7 +403,7 @@ def test_mixed_profile_qwen_command_arg_order_matches_model_card(tmp_path: Path)
     reordered into another argument.
     """
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
     qwen_block = blocks["vllm-qwen36-35b"]
@@ -412,7 +425,7 @@ def test_mixed_profile_qwen_command_arg_order_matches_model_card(tmp_path: Path)
 def test_mixed_profile_litellm_config_unchanged_by_tool_calling(tmp_path: Path) -> None:
     """Adding tool_calling on a service must not perturb the LiteLLM config."""
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
     by_alias = {m["model_name"]: m["litellm_params"] for m in cfg_doc["model_list"]}
 
@@ -430,7 +443,7 @@ def test_mixed_profile_litellm_config_unchanged_by_tool_calling(tmp_path: Path) 
 
 def test_mixed_profile_compose_service_names_are_stable(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     blocks = _split_compose_blocks((tmp_path / "generated" / "docker-compose.yml").read_text())
     vllm_services = sorted(name for name in blocks if name.startswith("vllm-"))
     assert vllm_services == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
@@ -439,7 +452,7 @@ def test_mixed_profile_compose_service_names_are_stable(tmp_path: Path) -> None:
 def test_default_pythia_profiles_have_no_chat_compat(tmp_path: Path) -> None:
     for profile_name in ("helm-pythia-6.9b", "helm-pythia-2.8b-v0", "helm-pythia-1b-v0"):
         deployment = _deployment(tmp_path, profile_name, inventory="1x96")
-        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        render_compose_artifacts({"deployment": deployment})
         cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
         for entry in cfg_doc["model_list"]:
             params = entry["litellm_params"]
@@ -453,7 +466,7 @@ def test_default_pythia_profiles_have_no_chat_compat(tmp_path: Path) -> None:
 
 def test_pythia_inspect_mmlu_compat_renders_completions_with_litellm_template(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "pythia-inspect-mmlu-compat", inventory="2x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
 
     # Both Pythia services keep protocol_mode=completions.
     for svc in deployment["services"]:
@@ -486,7 +499,7 @@ def test_pythia_inspect_mmlu_compat_does_not_render_chat_template_flags_in_compo
     tmp_path: Path,
 ) -> None:
     deployment = _deployment(tmp_path, "pythia-inspect-mmlu-compat", inventory="2x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     assert "--chat-template" not in compose_text
     assert "--chat-template-content-format" not in compose_text
@@ -502,7 +515,7 @@ def test_no_compose_service_renders_chat_template_flags(tmp_path: Path) -> None:
         ("qwen2-5-7b-instruct-turbo-default", "1x96"),
     ):
         deployment = _deployment(tmp_path, profile_name, inventory=inventory)
-        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        render_compose_artifacts({"deployment": deployment})
         compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
         assert "--chat-template" not in compose_text, profile_name
 
@@ -512,7 +525,7 @@ def test_mixed_profile_pythia_services_get_chat_compat_qwen_does_not(tmp_path: P
     should carry the flat-messages prompt-template fields. The Qwen chat
     entry must remain a plain `openai/...` route with no `roles` block."""
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
 
     services = {s["service_name"]: s for s in deployment["services"]}
     assert services["pythia-69b"]["chat_compat_enabled"] is True
@@ -549,7 +562,7 @@ def test_mixed_profile_pythia_services_get_chat_compat_qwen_does_not(tmp_path: P
 
 def test_qwen_chat_profiles_are_unaffected_by_chat_compat(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "qwen2-5-7b-instruct-turbo-default", inventory="1x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
     for entry in cfg_doc["model_list"]:
         params = entry["litellm_params"]
@@ -562,7 +575,7 @@ def test_qwen_chat_profiles_are_unaffected_by_chat_compat(tmp_path: Path) -> Non
 
 def test_litellm_config_for_chat_compat_profile_is_valid_yaml(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "pythia-inspect-mmlu-compat", inventory="2x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
     cfg_doc = yaml.safe_load(text)
     assert isinstance(cfg_doc, dict)
@@ -579,14 +592,14 @@ def test_no_profile_renders_unsupported_enable_reasoning_flag(tmp_path: Path) ->
         ("qwen2-5-7b-instruct-turbo-default", "1x96"),
     ):
         deployment = _deployment(tmp_path, profile_name, inventory=inventory)
-        render_compose_artifacts(tmp_path, {"deployment": deployment})
+        render_compose_artifacts({"deployment": deployment})
         compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
         assert "--enable-reasoning" not in compose_text, profile_name
 
 
 def test_litellm_keeps_merge_reasoning_for_reasoning_models(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     cfg_doc = yaml.safe_load((tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text())
     qwen_entry = next(m for m in cfg_doc["model_list"] if m["model_name"] == "qwen3.6-35b-a3b")
     assert qwen_entry["litellm_params"]["merge_reasoning_content_in_choices"] is True
@@ -616,7 +629,7 @@ def test_pythia_qwen3_6_mixed_profile_resolves_on_4x96(tmp_path: Path) -> None:
 
 def test_pythia_qwen3_6_mixed_profile_renders_compose_and_litellm(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
 
@@ -647,7 +660,7 @@ def test_qwen3_6_dual_tp2_4x96_profile_resolves_and_renders(tmp_path: Path) -> N
     assert gpu01["protocol_mode"] == "chat" and gpu23["protocol_mode"] == "chat"
     assert gpu01["reasoning_enabled"] is True and gpu01["reasoning_parser"] == "qwen3"
 
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
     assert "vllm-qwen36-35b-gpu01" in blocks
@@ -686,7 +699,7 @@ def test_kubeai_protocol_validation_applies(tmp_path: Path) -> None:
         }
     }
     deployment = resolve(
-        tmp_path, cfg, inventory=simulate_inventory("1x96"),
+        cfg, inventory=simulate_inventory("1x96"),
         profile_name="broken-pythia-chat-kubeai",
     )
     report = validate_resolved(deployment)
@@ -697,15 +710,13 @@ def test_kubeai_protocol_validation_applies(tmp_path: Path) -> None:
 
 
 def test_load_profile_contract_uses_public_loader_for_gpt_oss_variants(tmp_path: Path) -> None:
-    root = _write_root_config(tmp_path)
+    _write_root_config(tmp_path)
     completions = load_profile_contract(
         "gpt-oss-20b-completions",
-        root=root,
         simulate_hardware_spec="1x96",
     )
     chat = load_profile_contract(
         "gpt-oss-20b-chat",
-        root=root,
         simulate_hardware_spec="1x96",
     )
     assert completions["services"][0]["protocol"]["mode"] == "completions"
@@ -722,7 +733,7 @@ def test_compose_vllm_service_persists_caches_and_uses_host_ipc(tmp_path: Path) 
       adequate shared memory for tensor-parallel and worker IPC.
     """
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
     vllm_blocks = {name: body for name, body in blocks.items() if name.startswith("vllm-")}
@@ -740,7 +751,7 @@ def test_compose_vllm_service_persists_caches_and_uses_host_ipc(tmp_path: Path) 
 def test_compose_non_vllm_services_do_not_get_vllm_cache_mount(tmp_path: Path) -> None:
     """The vLLM cache mount and host IPC must not leak into Postgres / litellm / open-webui."""
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
     for name in ("postgres-open-webui", "postgres-litellm", "litellm", "open-webui"):
@@ -750,23 +761,25 @@ def test_compose_non_vllm_services_do_not_get_vllm_cache_mount(tmp_path: Path) -
         assert "ipc: host" not in body, name
 
 
-def test_default_state_paths_include_vllm_cache() -> None:
+def test_default_state_paths_include_vllm_cache(tmp_path: Path) -> None:
     from vllm_service.config import default_state_paths, normalized_state
 
+    # data_root() is pinned to tmp_path by the autouse fixture.
     paths = default_state_paths()
     assert "vllm_cache" in paths
     assert paths["vllm_cache"].endswith("/vllm-cache")
+    assert paths["vllm_cache"].startswith(str(tmp_path))
 
-    normalized = normalized_state(Path("/tmp/example-root"), {"vllm_cache": "custom/vllm"})
-    assert normalized["vllm_cache"] == "/tmp/example-root/custom/vllm"
+    normalized = normalized_state({"vllm_cache": "custom/vllm"})
+    assert normalized["vllm_cache"] == str(tmp_path / "custom" / "vllm")
 
 
 def test_output_generated_dir_redirects_compose_render(tmp_path: Path) -> None:
     """Configured output.generated_dir takes precedence over the default."""
     cfg = _cfg(tmp_path)
     cfg["output"] = {"generated_dir": str(tmp_path / "custom-out")}
-    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    deployment = resolve(cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
+    render_compose_artifacts({"deployment": deployment})
     assert (tmp_path / "custom-out" / "docker-compose.yml").exists()
     assert (tmp_path / "custom-out" / ".env").exists()
     # The repo-local generated/ is not touched.
@@ -776,8 +789,8 @@ def test_output_generated_dir_redirects_compose_render(tmp_path: Path) -> None:
 def test_output_generated_dir_redirects_kubeai_render(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, backend="kubeai")
     cfg["output"] = {"generated_dir": str(tmp_path / "custom-out")}
-    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
-    render_kubeai_artifacts(tmp_path, {"deployment": deployment})
+    deployment = resolve(cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
+    render_kubeai_artifacts({"deployment": deployment})
     assert (tmp_path / "custom-out" / "kubeai" / "models.yaml").exists()
     assert (tmp_path / "custom-out" / "kubeai" / "kubeai-values.yaml").exists()
     assert not (tmp_path / "generated").exists()
@@ -787,7 +800,7 @@ def test_openwebui_auth_defaults_to_disabled_in_compose_render(tmp_path: Path) -
     """Auth-less Open WebUI is the out-of-the-box experience for compose."""
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
     assert deployment["open_webui"]["auth"] is False
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
     assert 'WEBUI_AUTH: "False"' in blocks["open-webui"]
@@ -796,19 +809,20 @@ def test_openwebui_auth_defaults_to_disabled_in_compose_render(tmp_path: Path) -
 def test_openwebui_auth_can_be_enabled_via_config(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     cfg["open_webui"] = {"auth": True}
-    deployment = resolve(tmp_path, cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
+    deployment = resolve(cfg, inventory=simulate_inventory("1x96"), profile_name="qwen2-5-7b-instruct-turbo-default")
     assert deployment["open_webui"]["auth"] is True
-    render_compose_artifacts(tmp_path, {"deployment": deployment})
+    render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     blocks = _split_compose_blocks(compose_text)
     assert 'WEBUI_AUTH: "True"' in blocks["open-webui"]
 
 
-def test_normalized_output_anchors_relative_paths_on_root() -> None:
+def test_normalized_output_anchors_relative_paths_on_data_root(tmp_path: Path) -> None:
     from vllm_service.config import normalized_output
 
-    normalized = normalized_output(Path("/srv/checkout"), {"generated_dir": "out"})
-    assert normalized["generated_dir"] == "/srv/checkout/out"
+    # data_root() is pinned to tmp_path by the autouse fixture.
+    normalized = normalized_output({"generated_dir": "out"})
+    assert normalized["generated_dir"] == str(tmp_path / "out")
 
-    normalized = normalized_output(Path("/srv/checkout"), {"generated_dir": "/abs/path"})
+    normalized = normalized_output({"generated_dir": "/abs/path"})
     assert normalized["generated_dir"] == "/abs/path"
