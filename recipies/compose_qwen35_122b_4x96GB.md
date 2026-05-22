@@ -13,6 +13,21 @@ This profile uses:
 
 ---
 
+## Quick path: use the built-in profile
+
+Available out of the box as the built-in profile
+`qwen3.5-122b-a10b-tp4-4x96`. To skip writing local YAML:
+
+```bash
+vllm-stack setup --backend compose --profile qwen3.5-122b-a10b-tp4-4x96
+vllm-stack render --yes
+vllm-stack up -d
+```
+
+The rest of this recipe walks through the same deployment manually.
+
+---
+
 ## 1. Start from the repo root
 
 ```bash

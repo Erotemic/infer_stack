@@ -16,6 +16,22 @@ This profile uses:
 
 ---
 
+## Quick path: use the built-in profile
+
+This deployment is available out of the box as the built-in profile
+`qwen3.6-35b-a3b-dual-tp2-4x96`. To skip writing any local YAML:
+
+```bash
+vllm-stack setup --backend compose --profile qwen3.6-35b-a3b-dual-tp2-4x96
+vllm-stack render --yes
+vllm-stack up -d
+```
+
+The rest of this recipe walks through the same deployment manually, so you
+can see how the model and profile YAML map to the rendered Compose stack.
+
+---
+
 ## 1. Start from the repo root
 
 ```bash

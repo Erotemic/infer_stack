@@ -354,6 +354,64 @@ profiles:
         qwen3.6-35b-a3b-gpu23: qwen36-35b-gpu23
 
 
+  qwen3.5-122b-a10b-tp4-4x96:
+    description: "Single Qwen3.5-122B-A10B service across 4x96GB GPUs (TP=4) at 128k context."
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: qwen-122b
+        model: qwen3.5-122b-a10b
+        served_model_name: qwen3.5-122b-a10b-128k
+        protocol_mode: chat
+        placement:
+          strategy: exact
+          gpu_indices: [0, 1, 2, 3]
+        topology:
+          tensor_parallel_size: 4
+        runtime:
+          max_model_len: 131072
+          gpu_memory_utilization: 0.95
+          max_num_batched_tokens: 1024
+          max_num_seqs: 1
+          enable_prefix_caching: false
+        extra_args:
+          - --language-model-only
+
+    router:
+      aliases:
+        qwen3.5-122b-a10b-128k: qwen-122b
+
+
+  qwen3.5-122b-a10b-fp8-tp4-4x96:
+    description: "Single Qwen3.5-122B-A10B-FP8 service across 4x96GB GPUs (TP=4) at 262k context."
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: qwen-122b-fp8
+        model: qwen3.5-122b-a10b-fp8
+        served_model_name: qwen3.5-122b-a10b-fp8-262k
+        protocol_mode: chat
+        placement:
+          strategy: exact
+          gpu_indices: [0, 1, 2, 3]
+        topology:
+          tensor_parallel_size: 4
+        runtime:
+          max_model_len: 262144
+          gpu_memory_utilization: 0.95
+          max_num_batched_tokens: 1024
+          max_num_seqs: 1
+          enable_prefix_caching: false
+        extra_args:
+          - --language-model-only
+
+    router:
+      aliases:
+        qwen3.5-122b-a10b-fp8-262k: qwen-122b-fp8
+
+
   pythia-qwen25-gptoss-mixed-4x96:
     # Co-residency profile that brings up four audit-target models on a
     # single 4x96GB host. Layout:

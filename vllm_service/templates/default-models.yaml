@@ -124,7 +124,7 @@ models:
     memory_class_gib: 80
     min_vram_gib_per_replica: 80
     preferred_gpu_count: 2
-    context_window: 32768
+    context_window: 131072
     reasoning:
       enabled: true
       parser: qwen3
@@ -144,7 +144,7 @@ models:
     memory_class_gib: 80
     min_vram_gib_per_replica: 80
     preferred_gpu_count: 2
-    context_window: 32768
+    context_window: 262144
     reasoning:
       enabled: true
       parser: qwen3
