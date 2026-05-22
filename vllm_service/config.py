@@ -32,7 +32,7 @@ PINNED_IMAGES = {
 }
 
 DEFAULT_PORTS = {
-    "litellm": 14000,
+    "litellm": 14042,
     "open_webui": 13000,
     "postgres": 15432,
 }

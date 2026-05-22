@@ -129,18 +129,20 @@ host with other jobs.
 ## Demos / integration recipes
 
 End-to-end examples under [docs/demos/](docs/demos/) are written as
-markdown tutorials whose code blocks are individually executable. To
-verify a demo still works:
+markdown tutorials. The CI smoke test is runnable with pytest-codeblocks:
 
 ```bash
-pytest --codeblocks docs/demos/quickstart.md
+pytest --codeblocks docs/demos/ci_smoke_test.md
 ```
 
 Each ``bash`` block is a self-contained shell snippet you can also
 copy-paste into a terminal. See
-[docs/demos/quickstart.md](docs/demos/quickstart.md) for the canonical
+[docs/demos/ci_smoke_test.md](docs/demos/ci_smoke_test.md) for the
 ``setup → describe → validate → render`` flow on the smallest test
 profiles.
+
+For a real running stack on a workstation, see
+[docs/demos/quickstart.md](docs/demos/quickstart.md).
 
 User-supplied paths on the CLI (`--file`, `--from-file`,
 `--resource-profiles-file`, `--output-dir`) still resolve against the
@@ -172,7 +174,7 @@ vllm-stack smoke-test
 The default Compose front door is:
 
 ```text
-http://127.0.0.1:14000/v1
+http://127.0.0.1:14042/v1
 ```
 
 unless you changed the LiteLLM port in config.
@@ -180,13 +182,13 @@ unless you changed the LiteLLM port in config.
 List models:
 
 ```bash
-curl http://127.0.0.1:14000/v1/models
+curl http://127.0.0.1:14042/v1/models
 ```
 
 Send a request:
 
 ```bash
-curl http://127.0.0.1:14000/v1/chat/completions \
+curl http://127.0.0.1:14042/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "qwen/qwen2.5-7b-instruct-turbo",
@@ -370,7 +372,7 @@ streamed response. To test reasoning end-to-end:
 ```bash
 # Direct LiteLLM curl (streaming):
 source generated/.env
-curl -N http://127.0.0.1:14000/v1/chat/completions \
+curl -N http://127.0.0.1:14042/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.6-35b-a3b","stream":true,

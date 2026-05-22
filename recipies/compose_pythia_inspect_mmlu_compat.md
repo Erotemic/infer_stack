@@ -105,7 +105,7 @@ A chat-shaped call should now work end-to-end:
 
 ```bash
 source generated/.env
-curl -s http://127.0.0.1:14000/v1/chat/completions \
+curl -s http://127.0.0.1:14042/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"eleutherai/pythia-6.9b",
@@ -120,7 +120,7 @@ For HELM/Inspect runs that need exact prompt control, prefer
 `/v1/completions` directly:
 
 ```bash
-curl -s http://127.0.0.1:14000/v1/completions \
+curl -s http://127.0.0.1:14042/v1/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"eleutherai/pythia-6.9b","prompt":"The capital of France is","max_tokens":16}'

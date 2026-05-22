@@ -22,9 +22,20 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return data
 
 
-def ensure_secret(env: dict[str, str], key: str, length: int = 32) -> str:
+def ensure_secret(
+    env: dict[str, str], key: str, length: int = 32, prefix: str = ""
+) -> str:
+    """Return ``env[key]`` if present (and matches ``prefix``), else a fresh secret.
+
+    The ``prefix`` requirement is checked against any existing value: if the
+    stored value does not start with ``prefix``, a new secret is generated.
+    This matters for keys whose downstream consumer enforces a format
+    (e.g. LiteLLM rejects auth tokens that don't start with ``sk-``).
+    """
     value = env.get(key, "").strip()
-    return value if value else secrets.token_urlsafe(length)
+    if value and (not prefix or value.startswith(prefix)):
+        return value
+    return prefix + secrets.token_urlsafe(length)
 
 
 def _parse_env_lines(text: str) -> list[tuple[str, str | None, str]]:

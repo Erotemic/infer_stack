@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 """scriptconfig-based CLI for vllm-stack.
 
 Each subcommand is a ``scfg.DataConfig`` subclass; ``ManageCLI`` composes
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from copy import deepcopy
 from pathlib import Path
@@ -43,12 +46,21 @@ from .config import (
     load_kubeai_resource_profiles,
     load_yaml,
     normalized_catalogs,
+    normalized_state,
     plan_path_for_config,
     save_kubeai_resource_profiles,
     save_yaml,
 )
 from .contracts import load_profile_contract
-from .docker_utils import compose_down, compose_recreate_router, compose_up
+from .docker_utils import (
+    PortInUseError,
+    check_ports_available,
+    compose_down,
+    compose_recreate_router,
+    compose_up,
+    docker_rm_dirs,
+    our_published_ports,
+)
 from .env_utils import parse_env_file
 from .exporters import export_benchmark_bundle
 from .hardware import detect_inventory, simulate_inventory
@@ -211,6 +223,7 @@ def _configured_state_paths(state_root: str) -> dict[str, str]:
     base = Path(state_root)
     return {
         "hf_cache": str(base / "hf-cache"),
+        "vllm_cache": str(base / "vllm-cache"),
         "open_webui": str(base / "open-webui"),
         "postgres_open_webui": str(base / "postgres-open-webui"),
         "postgres_litellm": str(base / "postgres-litellm"),
@@ -542,6 +555,10 @@ def _compose_up_with_router_recreate(
     """
     compose_file = generated_dir(cfg) / "docker-compose.yml"
     env_file = generated_dir(cfg) / ".env"
+
+    _preflight_check_ports(cfg)
+
+    compose_up_failed: BaseException | None = None
     try:
         compose_up(
             cfg["runtime"]["compose_cmd"],
@@ -550,14 +567,52 @@ def _compose_up_with_router_recreate(
             detach=detach,
             remove_orphans=True,
         )
+    except BaseException as ex:
+        compose_up_failed = ex
+        raise
     finally:
-        if detach:
+        # Only force-recreate the router when the main `up` succeeded. If `up`
+        # failed because litellm itself can't start (e.g. port conflict), then
+        # `compose_recreate_router` would just fail with the same root cause
+        # and its exception would mask the primary error the user needs to see.
+        if detach and compose_up_failed is None:
             compose_recreate_router(
                 cfg["runtime"]["compose_cmd"],
                 compose_file,
                 env_file,
                 detach=True,
             )
+
+
+def _preflight_check_ports(cfg: dict[str, Any]) -> None:
+    """Verify the host ports the rendered stack will publish are free.
+
+    Skips ports that are already published by our own compose project (e.g.
+    the user is running ``up`` or ``switch --apply`` against a stack that's
+    already up — compose will detect the config change and recreate those
+    containers). Only flags ports owned by something we don't control, so the
+    user sees a real conflict, not a self-collision.
+    """
+    ports = cfg.get("ports", {})
+    candidates: list[tuple[str, int, str]] = []
+    litellm_port = ports.get("litellm")
+    if litellm_port:
+        candidates.append(("litellm", int(litellm_port), "0.0.0.0"))
+    open_webui_port = ports.get("open_webui")
+    if open_webui_port:
+        candidates.append(("open-webui", int(open_webui_port), "0.0.0.0"))
+
+    owned = our_published_ports(
+        cfg["runtime"]["compose_cmd"],
+        generated_dir(cfg) / "docker-compose.yml",
+        runtime_env_path(cfg),
+    )
+    to_check = [(svc, port, host) for svc, port, host in candidates if port not in owned]
+
+    try:
+        check_ports_available(to_check)
+    except PortInUseError as ex:
+        raise SystemExit(str(ex)) from ex
 
 
 def _apply_path_overrides(config: Any) -> None:
@@ -1197,6 +1252,66 @@ class DownCLI(
         return 0
 
 
+class PurgeCLI(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+    _ComposeOverrideMixin,
+):
+    """Stop the stack and delete all Docker-written state directories.
+
+    Uses a temporary Alpine container to remove directories that Docker wrote
+    as root, avoiding ``Permission denied`` errors from plain ``rm -rf``.
+    """
+
+    yes = scfg.Value(False, isflag=True, short_alias=["y"], help="Skip confirmation prompt.")
+    delete_cache = scfg.Value(
+        False, isflag=True,
+        help="Also delete hf-cache and vllm-cache (model weights). By default those are preserved.",
+    )
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config, allow_missing=True)
+
+        state = normalized_state(cfg.get("state", {}))
+        always_delete = ["postgres_litellm", "postgres_open_webui", "open_webui", "runtime"]
+        model_dirs = ["hf_cache", "vllm_cache"]
+        keys = always_delete + model_dirs if config.delete_cache else always_delete
+        dirs_to_delete = [Path(state[k]) for k in keys if Path(state[k]).exists()]
+
+        if not dirs_to_delete:
+            print("Nothing to purge — state directories do not exist.")
+            return 0
+
+        if not config.yes:
+            print("The following directories will be deleted (via Docker to handle root-owned files):")
+            for d in dirs_to_delete:
+                print(f"  {d}")
+            answer = input("Proceed? [y/N] ").strip().lower()
+            if answer not in {"y", "yes"}:
+                print("Aborted.")
+                return 1
+
+        compose_file = generated_dir(cfg) / "docker-compose.yml"
+        if compose_file.exists() and backend_name(cfg) == "compose":
+            try:
+                compose_down(
+                    cfg["runtime"]["compose_cmd"],
+                    compose_file,
+                    runtime_env_path(cfg),
+                )
+            except Exception as ex:
+                print(f"Warning: compose down failed (containers may already be stopped): {ex}")
+
+        compose_cmd = cfg.get("runtime", {}).get("compose_cmd", "docker compose")
+        docker_cmd = compose_cmd.split()[0]
+        docker_rm_dirs(dirs_to_delete, docker_cmd=docker_cmd)
+        print("Purge complete.")
+        return 0
+
+
 class DeployCLI(_PlanOverridesCLI):
     """Apply the rendered stack to its backend (kubeai apply / compose up)."""
 
@@ -1229,6 +1344,45 @@ class DeployCLI(_PlanOverridesCLI):
             detach=bool(config.detach),
             remove_orphans=True,
         )
+        return 0
+
+
+class EnvCLI(
+    _PathOverridesMixin,
+    _BackendOverrideMixin,
+):
+    """Inspect the rendered .env file (path, single value, or eval-friendly export)."""
+
+    key = scfg.Value(None, type=str, position=1, help="Print only this variable's value. Empty = all.")
+    export = scfg.Value(False, isflag=True, help="Print `export KEY=value` lines suitable for `eval`.")
+    path = scfg.Value(False, isflag=True, help="Print only the absolute path to .env (default if no flags).")
+
+    @classmethod
+    def main(cls, argv=1, **kwargs):
+        config = cls.cli(argv=argv, data=kwargs)
+        _apply_path_overrides(config)
+        cfg = config_for_runtime(config)
+        if backend_name(cfg) != "compose":
+            raise SystemExit("`env` only applies to the compose backend.")
+        env_file = runtime_env_path(cfg)
+        if not env_file.exists():
+            raise SystemExit(
+                f"No .env at {env_file}. Run `vllm-stack render` first."
+            )
+        # Default with no flags and no key: print the path so users can do
+        #   `source $(vllm-stack env)` (with `set -a` if they want export semantics).
+        if config.key is None and not config.export:
+            print(env_file)
+            return 0
+        env = parse_env_file(env_file)
+        if config.key:
+            if config.key not in env:
+                raise SystemExit(f"{config.key!r} not found in {env_file}")
+            print(env[config.key])
+            return 0
+        # --export: emit eval-friendly export lines.
+        for k, v in env.items():
+            print(f"export {k}={shlex.quote(v)}")
         return 0
 
 
@@ -1425,6 +1579,86 @@ def _infer_default_base_url(cfg: dict[str, Any], config: Any) -> str:
     return default_base_url(deployment, explicit=_as_mapping(config).get("base_url"))
 
 
+def _smoke_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    json_body: Any = None,
+    timeout: float = 30,
+) -> requests.Response:
+    """Wrapper around ``requests.{get,post}`` that emits actionable errors.
+
+    The smoke test runs against a stack that may be (a) not listening yet,
+    (b) listening but with an unhealthy upstream that resets connections, or
+    (c) returning HTTP errors during model load. Each of those produces a
+    different requests exception with a giant traceback by default; map them
+    onto one-liner ``SystemExit`` messages that tell the user what to check.
+    """
+    try:
+        if method.upper() == "GET":
+            resp = requests.get(url, headers=headers, timeout=timeout)
+        else:
+            resp = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+    except requests.exceptions.Timeout as ex:
+        raise SystemExit(
+            f"Request to {url} timed out after {timeout}s.\n"
+            "The model may still be loading, or the server is overloaded.\n"
+            "  vllm-stack logs vllm-*"
+        ) from ex
+    except requests.exceptions.ConnectionError as ex:
+        # Two distinct sub-cases inside ConnectionError that warrant different
+        # remediation: (a) nothing listening on the port, (b) something is
+        # listening but it closed the connection without responding (typical
+        # of LiteLLM up but a depended-on vLLM container still loading the
+        # model and failing the dependency health-check chain).
+        cause = ex.args[0] if ex.args else ex
+        cause_str = str(cause)
+        if "RemoteDisconnected" in cause_str or "Connection aborted" in cause_str:
+            raise SystemExit(
+                f"Connection to {url} was closed before a response arrived.\n"
+                "The router is listening but an upstream service is not ready yet.\n"
+                "Check container status and logs:\n"
+                "  vllm-stack ps\n"
+                "  vllm-stack logs vllm-*"
+            ) from ex
+        if "Connection refused" in cause_str or "Failed to establish a new connection" in cause_str:
+            raise SystemExit(
+                f"Could not connect to {url}: nothing is listening yet.\n"
+                "If you just ran `vllm-stack up`, give the router a few seconds.\n"
+                "  vllm-stack ps                # confirm the litellm container is running\n"
+                "  vllm-stack logs litellm      # check for startup errors"
+            ) from ex
+        raise SystemExit(f"Connection error reaching {url}: {cause_str}") from ex
+    status = getattr(resp, "status_code", 200)
+    if status >= 400:
+        body = getattr(resp, "text", "") or ""
+        body = body.strip()
+        if len(body) > 500:
+            body = body[:500] + "... [truncated]"
+        reason = getattr(resp, "reason", "") or ""
+        if status in (401, 403):
+            raise SystemExit(
+                f"{status} {reason} from {url}.\n"
+                "The auth key didn't match what the running container expects.\n"
+                "If you re-rendered after the container started, the key in .env "
+                "may have changed. Restart with:\n"
+                "  vllm-stack down && vllm-stack up -d\n"
+                f"Response: {body}"
+            )
+        if status == 503:
+            raise SystemExit(
+                f"{status} {reason} from {url}.\n"
+                "An upstream service is unavailable (commonly the vLLM engine is still loading).\n"
+                "  vllm-stack logs vllm-*\n"
+                f"Response: {body}"
+            )
+        raise SystemExit(
+            f"HTTP {status} {reason} from {url}.\nResponse: {body}"
+        )
+    return resp
+
+
 def _resolve_smoke_test_protocol(
     cfg: dict[str, Any],
     config: Any,
@@ -1497,8 +1731,7 @@ class SmokeTestCLI(
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        models_resp = requests.get(f"{base_url}/models", headers=headers, timeout=30)
-        models_resp.raise_for_status()
+        models_resp = _smoke_request("GET", f"{base_url}/models", headers=headers, timeout=30)
         models = models_resp.json().get("data", [])
         print(json.dumps(models_resp.json(), indent=2))
         if config.skip_chat:
@@ -1521,8 +1754,7 @@ class SmokeTestCLI(
                 "max_tokens": config.max_tokens,
             }
             endpoint = f"{base_url}/chat/completions"
-        resp = requests.post(endpoint, headers=headers, json=payload, timeout=120)
-        resp.raise_for_status()
+        resp = _smoke_request("POST", endpoint, headers=headers, json_body=payload, timeout=120)
         print(json.dumps(resp.json(), indent=2))
         return 0
 
@@ -1595,8 +1827,10 @@ class ManageCLI(scfg.ModalCLI):
     # Runtime
     up = UpCLI
     down = DownCLI
+    purge = PurgeCLI
     deploy = DeployCLI
     status = StatusCLI
+    env = EnvCLI
     smoke_test = SmokeTestCLI
     benchmark = BenchmarkCLI
 

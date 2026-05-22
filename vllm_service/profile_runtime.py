@@ -34,7 +34,7 @@ def default_base_url(deployment: dict[str, Any], *, explicit: str | None = None)
         if ingress.get("enabled") and host:
             return f"http://{host}/openai/v1"
         return "http://127.0.0.1:8000/openai/v1"
-    return f"http://127.0.0.1:{deployment.get('ports', {}).get('litellm', 14000)}/v1"
+    return f"http://127.0.0.1:{deployment.get('ports', {}).get('litellm', 14042)}/v1"
 
 
 def suggested_client_class(protocol_mode: str, transport_kind: str) -> str:

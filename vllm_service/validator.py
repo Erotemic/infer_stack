@@ -96,7 +96,7 @@ def validate_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
                 errors.append(f"service {svc['service_name']} uses a heterogeneous multi-GPU group")
 
     if backend == "compose":
-        port = int(resolved.get("ports", {}).get("litellm", 14000))
+        port = int(resolved.get("ports", {}).get("litellm", 14042))
         if port in used_ports:
             errors.append(f"duplicate host port assignment: {port}")
         used_ports.add(port)

@@ -140,7 +140,7 @@ Edit `generated/.env` and set `HF_TOKEN=...`. Unknown `.env` keys
 
 ```bash
 source generated/.env
-curl -s http://127.0.0.1:14000/v1/models \
+curl -s http://127.0.0.1:14042/v1/models \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" | jq '.data[].id'
 ```
 
@@ -174,7 +174,7 @@ For exact prompt control on the Pythia models, prefer direct
 `/v1/completions` against LiteLLM:
 
 ```bash
-curl -s http://127.0.0.1:14000/v1/completions \
+curl -s http://127.0.0.1:14042/v1/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"eleutherai/pythia-6.9b","prompt":"The capital of France is","max_tokens":16}'

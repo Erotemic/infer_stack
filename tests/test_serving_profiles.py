@@ -41,7 +41,7 @@ def _cfg(tmp_path: Path, *, backend: str = "compose") -> dict:
         "postgres": "state/postgres",
         "runtime": "state/runtime",
     }
-    cfg["ports"] = {"litellm": 14000, "open_webui": 13000, "postgres": 15432}
+    cfg["ports"] = {"litellm": 14042, "open_webui": 13000, "postgres": 15432}
     # Relative paths in output.generated_dir / state.* anchor on data_root(),
     # which the autouse fixture pins to tmp_path.
     cfg["output"] = {"generated_dir": "generated"}
@@ -265,7 +265,7 @@ def test_validation_rejects_chat_protocol_for_completions_only_model(tmp_path: P
         "postgres_litellm": "state/postgres-litellm",
         "runtime": "state/runtime",
     }
-    cfg["ports"] = {"litellm": 14000, "open_webui": 13000, "postgres": 15432}
+    cfg["ports"] = {"litellm": 14042, "open_webui": 13000, "postgres": 15432}
     cfg["profiles"] = {
         "broken-pythia-chat": {
             "description": "Synthetic invalid profile: chat on a completions-only model.",

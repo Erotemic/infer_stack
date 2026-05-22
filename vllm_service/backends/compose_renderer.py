@@ -41,7 +41,7 @@ def render_compose_artifacts(lock_data: dict, *, assume_yes: bool = True) -> Non
         "LITELLM_POSTGRES_DB": existing.get("LITELLM_POSTGRES_DB", "litellm"),
         "LITELLM_POSTGRES_USER": existing.get("LITELLM_POSTGRES_USER", "litellm"),
         "LITELLM_POSTGRES_PASSWORD": ensure_secret(existing, "LITELLM_POSTGRES_PASSWORD"),
-        "LITELLM_MASTER_KEY": ensure_secret(existing, "LITELLM_MASTER_KEY"),
+        "LITELLM_MASTER_KEY": ensure_secret(existing, "LITELLM_MASTER_KEY", prefix="sk-"),
         "VLLM_BACKEND_API_KEY": ensure_secret(existing, "VLLM_BACKEND_API_KEY"),
         "WEBUI_SECRET_KEY": ensure_secret(existing, "WEBUI_SECRET_KEY"),
         "HF_TOKEN": existing.get("HF_TOKEN", ""),

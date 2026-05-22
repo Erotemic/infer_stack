@@ -35,6 +35,22 @@ profiles:
   # These actually pull weights and start vLLM, so they're appropriate
   # for integration / smoke tests that verify the rendered stack works
   # end-to-end, not just the planner.
+  gpt2-single:
+    description: GPT-2 124M (completions-only) on one GPU; smallest plumbing test (~250 MB, no HF_TOKEN needed).
+    vllm:
+      enable_responses_api_store: false
+      logging_level: INFO
+    services:
+      - service_name: chat
+        model: gpt2
+        protocol_mode: completions
+        placement:
+          strategy: first_fit
+          gpu_count: 1
+    router:
+      aliases:
+        gpt2: chat
+
   smollm2-135m-single:
     description: SmolLM2 135M Instruct on one GPU; smallest real-weights profile (~270 MB).
     vllm:
@@ -963,7 +979,7 @@ profiles:
       request_model_name: openai/gpt-oss-20b
       api_key_env: LITELLM_MASTER_KEY
       api_key_placeholder: SET_LITELLM_MASTER_KEY_IN_RUNTIME_BUNDLE
-      base_url: http://localhost:14000/v1
+      base_url: http://localhost:14042/v1
     audit_notes:
       - Exported HELM bundles should use a chat-capable client class for this profile.
     vllm:
@@ -988,7 +1004,7 @@ profiles:
       request_model_name: openai/gpt-oss-20b
       api_key_env: LITELLM_MASTER_KEY
       api_key_placeholder: SET_LITELLM_MASTER_KEY_IN_RUNTIME_BUNDLE
-      base_url: http://localhost:14000/v1
+      base_url: http://localhost:14042/v1
     audit_notes:
       - Exported HELM bundles should use a completions-capable client class for this profile.
     vllm:
@@ -1004,7 +1020,7 @@ profiles:
       request_model_name: openai/gpt-oss-20b
       api_key_env: LITELLM_MASTER_KEY
       api_key_placeholder: SET_LITELLM_MASTER_KEY_IN_RUNTIME_BUNDLE
-      base_url: http://localhost:14000/v1
+      base_url: http://localhost:14042/v1
     audit_notes:
       - Exported HELM bundles should use a completions-capable client class for this profile.
       - Supports 4 parallel HELM workers; vLLM dp=4 handles request distribution across GPUs.

@@ -460,7 +460,7 @@ class _FakeResponse:
 
 def _smoke_test_kwargs(**overrides) -> dict:
     base = dict(
-        base_url="http://127.0.0.1:14000/v1",
+        base_url="http://127.0.0.1:14042/v1",
         prompt="Say hello in one sentence.",
         max_tokens=64,
         simulate_hardware="1x96",
