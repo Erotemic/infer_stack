@@ -11,8 +11,12 @@ state lived. This module replaces that with two stable roots:
   on Linux, respecting ``XDG_CONFIG_HOME``).
 * ``data_root()`` — where ``generated/`` (rendered artifacts) and
   ``state/`` (hf-cache, postgres volumes, runtime bind-mounts) default
-  to. ``ub.Path.appdir('vllm_service', type='cache')``
-  (``~/.cache/vllm_service`` on Linux, respecting ``XDG_CACHE_HOME``).
+  to. ``ub.Path.appdir('vllm_service', type='data')``
+  (``~/.local/share/vllm_service`` on Linux, respecting
+  ``XDG_DATA_HOME``). Uses ``data`` and not ``cache`` because the stack
+  hosts persistent state — postgres databases, Open WebUI chat history,
+  and user accounts — that would be silently lost if treated as
+  regenerable cache by a system cleanup tool.
 
 Both can be overridden by env vars (``VLLM_SERVICE_CONFIG_DIR`` /
 ``VLLM_SERVICE_DATA_DIR``) or by the CLI flags ``--config-dir`` /
@@ -43,7 +47,7 @@ def _default_config_root() -> Path:
 
 
 def _default_data_root() -> Path:
-    return Path(ub.Path.appdir("vllm_service", type="cache"))
+    return Path(ub.Path.appdir("vllm_service", type="data"))
 
 
 def config_root() -> Path:

@@ -811,7 +811,7 @@ class _PathOverridesMixin(scfg.DataConfig):
         type=str,
         help=(
             f"Directory for rendered artifacts and bind-mount state. Defaults to "
-            f"~/.cache/vllm_service (XDG_CACHE_HOME) or ${DATA_DIR_ENV} when set."
+            f"~/.local/share/vllm_service (XDG_DATA_HOME) or ${DATA_DIR_ENV} when set."
         ),
     )
 

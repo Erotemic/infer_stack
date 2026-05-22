@@ -79,7 +79,7 @@ artifacts:
 | What | Default location | Override |
 | --- | --- | --- |
 | `config.yaml`, `models.yaml`, `kubeai-values.local.yaml` | `~/.config/vllm_service/` (resp. `$XDG_CONFIG_HOME`) | `VLLM_SERVICE_CONFIG_DIR` env var, or `--config-dir` |
-| Rendered `generated/` (docker-compose.yml, plan.yaml, kubeai/*) and `state/` (hf-cache, postgres volumes, bind mounts) | `~/.cache/vllm_service/` (resp. `$XDG_CACHE_HOME`) | `VLLM_SERVICE_DATA_DIR` env var, or `--data-dir` |
+| Rendered `generated/` (docker-compose.yml, plan.yaml, kubeai/*) and `state/` (hf-cache, postgres volumes, bind mounts) | `~/.local/share/vllm_service/` (resp. `$XDG_DATA_HOME`) | `VLLM_SERVICE_DATA_DIR` env var, or `--data-dir` |
 
 Per-knob overrides still apply on top:
 
