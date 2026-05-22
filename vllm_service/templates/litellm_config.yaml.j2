@@ -1,9 +1,16 @@
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  # Persist YAML-loaded models into postgres-litellm so the admin API
+  # (/model/new, /model/delete) can operate on them. Without this, YAML
+  # models live in memory only and /model/delete returns "not found in DB",
+  # forcing a litellm container restart on every profile switch.
+  store_model_in_db: True
 
 model_list:
 {% for alias, target in lock.deployment.router.aliases.items() %}
 {% set svc = (lock.deployment.services | selectattr('service_name', 'equalto', target) | first) %}
+{% set max_output = svc.max_model_len // 2 %}
+{% set max_input = svc.max_model_len - max_output %}
   - model_name: {{ alias }}
     litellm_params:
 {% if svc.protocol_mode == "completions" %}
@@ -33,4 +40,8 @@ model_list:
           post_message: "\n"
       final_prompt_value: ""
 {% endif %}
+    model_info:
+      max_tokens: {{ svc.max_model_len }}
+      max_input_tokens: {{ max_input }}
+      max_output_tokens: {{ max_output }}
 {% endfor %}

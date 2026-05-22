@@ -1,3 +1,197 @@
+## 2026-05-22 21:30 -0400
+
+Model: claude-sonnet-4-6, then claude-opus-4-7 (model switch mid-session).
+
+User intent: `vllm-stack switch <profile> --apply` was bouncing Open WebUI
+and LiteLLM on every model swap. The goal was to keep both up while only
+the affected vLLM service is recreated, so chat sessions and WebSocket
+connections survive the swap. Also surfaced several smaller papercuts on
+the way: GPT-2 1024-context limit getting hit by Open WebUI's hardcoded
+`max_tokens=1000` title-generation feature, port 14000 squatted by VSCode
+Remote Tunnels' Microsoft Auth OAuth loopback listener, pre-flight port
+check refusing legitimate self-owned ports, and the smoke test crashing
+with a 60-line `requests` traceback when the stack wasn't ready.
+
+What I changed:
+
+- **Pre-flight port check now ignores self-owned ports.** New
+  `our_published_ports(compose_cmd, compose_file, env_file)` calls
+  `docker compose -f <file> ps --format json` and returns the host ports
+  our own project publishes. `_preflight_check_ports` skips those, so
+  `up`/`switch --apply` on a running stack stops false-positive-rejecting
+  with "port 14042 already in use" when the holder is *our* litellm.
+- **`compose_recreate_router` no longer touches open-webui.** Was
+  force-recreating both `litellm` and `open-webui` so the router would
+  reload the rendered YAML. Dropped open-webui from the service list:
+  Open WebUI re-fetches `/v1/models` on user actions, so a brief
+  stale-cache window is fine, and force-recreating logs every chat user
+  out of the UI.
+- **Open WebUI no longer `depends_on: litellm` in the compose template.**
+  Even with open-webui removed from `compose_recreate_router`, the user
+  still observed it being recreated on every profile switch. Diffing
+  renders with same data dir confirmed the open-webui block was
+  byte-identical between profiles. Empirically, Compose's `up -d` still
+  cascade-recreates dependents when their dependency is recreated, in
+  some interaction with `depends_on: condition: service_started` that
+  doesn't show up in the rendered hash. Breaking the YAML dep entirely
+  is the only reliable way to isolate Open WebUI from the chain. Open
+  WebUI's built-in retry logic for unreachable model providers makes
+  this safe — visible in the logs as `Cannot connect to host
+  litellm:4000` until the next poll succeeds.
+- **Live LiteLLM router refresh** (`_litellm_refresh_router_live`).
+  After `compose_up`, instead of force-recreating litellm to pick up the
+  new model list, diff `GET /model/info` (current state in the running
+  container) against the rendered YAML and apply via `POST /model/delete`
+  + `POST /model/new` with delete-before-add so a retargeted alias can
+  hand over without LiteLLM rejecting a duplicate `model_name`. Falls
+  back to `compose_recreate_router` only if anything goes wrong (admin
+  API unreachable on cold start, master key missing, individual call
+  fails).
+- **`store_model_in_db: True` in the generated `litellm_config.yaml`.**
+  This was the blocking issue for the live refresh: LiteLLM's
+  `/model/delete` endpoint requires the model to be in postgres,
+  but YAML-loaded models live in the in-memory router only. With
+  `store_model_in_db: True` LiteLLM syncs YAML models into postgres on
+  startup, so admin API CRUD works on them. Without it, `/model/delete`
+  responds "model not found in DB" → `RouterRefreshError` → fallback
+  fires every time.
+- **Resolve `os.environ/VAR` references before sending to admin API.**
+  LiteLLM substitutes `os.environ/...` strings at YAML-load time only.
+  The admin API takes literal values. Before sending the parsed YAML
+  entry to `/model/new`, walk it recursively and replace
+  `os.environ/VAR` with `env[VAR]` from the rendered `.env`.
+- **`LITELLM_MASTER_KEY` gets `sk-` prefix.** Extended `ensure_secret()`
+  with a `prefix=` arg; the renderer passes `prefix="sk-"` for
+  `LITELLM_MASTER_KEY`. If the existing key doesn't start with the
+  prefix, regenerate. Stops LiteLLM's confusing "Authentication Error,
+  LiteLLM Virtual Key expected. Received=AIrV…, expected to start with
+  'sk-'" rejection when users authenticate with the master key. (Note:
+  the real symptom was a red herring — auth actually worked for the
+  smoke test path, but the same key shape would have been rejected in
+  some virtual-key paths.)
+- **New `vllm-stack env` subcommand.** Three modes: bare prints the path
+  to the rendered `.env`, `--key NAME` prints one value, `--export`
+  prints `eval`-friendly `export KEY=value` lines (with `shlex.quote`).
+  Replaces the awkward `grep KEY .env | cut -d= -f2` pattern.
+- **New `vllm-stack purge` subcommand.** Stops the stack then uses a
+  temporary Alpine container (`docker run --rm -v <parent>:/mnt alpine
+  rm -rf /mnt/<dir>`) to delete root-owned state directories that
+  user-space `rm` can't touch. `--delete-cache` also wipes
+  `hf-cache/` and `vllm-cache/` for a full reset; default preserves
+  cached model weights.
+- **Smoke test errors are now one-liners.** New `_smoke_request`
+  wrapper maps the common `requests` failures onto `SystemExit` with
+  remediation hints: `ConnectionError(RemoteDisconnected)` → "router
+  up but upstream not ready, `vllm-stack logs vllm-*`"; `ConnectionError`
+  with refused → "nothing listening yet, `vllm-stack ps`"; `Timeout` →
+  "model still loading"; 401/403 → "auth key out of sync, restart with
+  `vllm-stack down && vllm-stack up -d`"; 503 → "vLLM still loading".
+  No more 60-line tracebacks for transient startup state.
+- **Default LiteLLM port changed 14000 → 14042.** VSCode Remote
+  Tunnels' built-in Microsoft Auth extension parks an OAuth loopback
+  listener on a fixed port — happened to be 14000 in the user's build.
+  14042 is the same character (just a tad bumped) and far enough from
+  the typical ephemeral OAuth port range that it shouldn't recur.
+- **`gpt2-single` profile and `gpt2` model.** GPT-2 124M
+  (`openai-community/gpt2`), ~250 MB, completions-only, no HF_TOKEN —
+  the smallest possible plumbing-test profile. Quickstart now starts
+  here and progresses to smollm2-135m then workstation-safe.
+- **`model_info` block in the LiteLLM template.** Every model carries
+  `max_tokens` / `max_input_tokens` / `max_output_tokens` derived from
+  `max_model_len` (50/50 split). Well-behaved clients (Open WebUI's
+  title-generation pipeline being one) see the cap and don't blow past
+  GPT-2's 1024 context with their hardcoded `max_tokens=1000`.
+- **Qwen3.5 reasoning blocks.** All 8 `qwen3.5-*` model entries were
+  missing `reasoning: {enabled: true, parser: qwen3, expose_to_openwebui:
+  true}`. Qwen3.6 had it; the 3.5 family was skipped. Without the
+  block, vLLM doesn't pass `--reasoning-parser qwen3`, the model's
+  `<think>…</think>` block leaks into `choices[].message.content`.
+
+State of mind / reflections:
+
+The root cause of "Open WebUI bounces" took three iterations to fully
+isolate, because each fix exposed another layer:
+
+1. First attempt — drop open-webui from `compose_recreate_router`. Tests
+   passed, but user reported "still went down". I assumed the live
+   refresh would now spare litellm too, so open-webui's session would be
+   undisturbed. Wrong.
+
+2. Second attempt — find why live refresh wasn't actually replacing the
+   fallback. Realised `store_model_in_db: True` was missing, so YAML
+   models had synthesised in-memory IDs that `/model/delete` rejected
+   with "not found in DB". Also: `os.environ/VAR` strings were being
+   forwarded verbatim to `POST /model/new` instead of being resolved
+   from the rendered `.env`. Fixed both. Tests passed, user reported
+   "still went down" again — with logs showing
+   `open-webui exited with code 0` *after* litellm.
+
+3. Third attempt — actually diff renders. Compose was recreating
+   open-webui despite identical config blocks. The remaining mechanism
+   had to be `depends_on` cascade behavior that the `--config-hash`
+   labels don't reveal. The user's suggestion to break the dep ended up
+   being the right move; nothing else could have isolated open-webui
+   without instrumenting Docker Compose itself.
+
+This is a worthwhile benchmark candidate: the surface symptom ("Open WebUI
+keeps bouncing on profile switch") had a misleading first explanation
+(force-recreate in our fallback) and even after that was fixed and tests
+passed, the real cause was a deeper LiteLLM-API limitation
+(`store_model_in_db`) *and* a non-obvious Compose cascade behavior that
+only diffing two real renders + reading container shutdown logs would
+catch. Each individual step looked complete in isolation. Worth
+distilling into `dev/benchmark-candidates/` once we add a few more like
+it.
+
+Design takeaways:
+
+1. **Container recreate vs. config refresh is a real distinction the
+   admin API forces you to confront.** YAML model_list is convenient
+   but it makes `/model/delete` unusable without `store_model_in_db:
+   True`. If you want live refresh to work, treat the DB as the source
+   of truth and let YAML populate it on startup — don't try to manage
+   two parallel stores.
+
+2. **Compose `depends_on` is not free.** It changes recreate-cascade
+   behavior in ways that aren't visible in the config-hash labels and
+   aren't documented prominently. For long-lived "session UI"
+   containers (Open WebUI, dashboards, monitoring frontends), prefer
+   no `depends_on` and lean on the dependent service's own retry
+   logic. Reserve `depends_on` for true ordering requirements (DB
+   migration before app start, etc.).
+
+3. **`os.environ/...` references are LiteLLM-YAML-only.** Anything
+   that round-trips YAML → admin API needs to resolve them first.
+
+4. **Pre-flight checks need self-ownership awareness.** A port-in-use
+   check that doesn't differentiate "another project owns this" from
+   "we own this and compose is about to recreate it" breaks `up`/
+   `switch --apply` on every running stack. The fix is a one-line
+   `docker compose ps --format json` query to extract our own
+   published ports and exclude them.
+
+5. **The user's first guess is often the right framing.** "Maybe we
+   need to make openweb-ui not depend on litellm?" — I had been
+   investigating it as a config-hash mystery for thirty minutes;
+   the user reframed it as a dependency-graph problem and the fix
+   was one YAML stanza deletion. Surface that level of intuition
+   earlier next time by stepping back from the mechanism after one
+   failed hypothesis.
+
+Validation:
+
+```bash
+vllm-stack render --yes
+vllm-stack down && vllm-stack up -d   # pick up depends_on removal + store_model_in_db
+vllm-stack switch <other-profile> --apply
+docker inspect open-webui --format='{{.State.StartedAt}}'  # before
+docker inspect open-webui --format='{{.State.StartedAt}}'  # after — should match
+```
+
+Tests: all 65 pass after each step.
+
+---
+
 ## 2026-05-20 15:09:24 -0400
 
 Model: claude-opus-4-7[1m] (Opus 4.7, 1M context).

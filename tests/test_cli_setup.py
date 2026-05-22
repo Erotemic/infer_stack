@@ -381,7 +381,15 @@ def test_switch_apply_compose_recreates_router_when_config_changes(
     flat = [" ".join(c) for c in invocations]
     assert not any("down -v" in c or "--volumes" in c for c in flat)
     assert any(" up " in c and "-d" in c.split() for c in flat)
-    assert any("--force-recreate" in c and "litellm" in c and "open-webui" in c for c in flat)
+    # When live router refresh isn't reachable (no real LiteLLM under test),
+    # we fall back to force-recreating just the litellm container — open-webui
+    # is deliberately left running so chat sessions don't drop on a switch.
+    recreate_cmds = [c for c in flat if "--force-recreate" in c]
+    assert recreate_cmds, "expected a force-recreate fallback to fire"
+    assert any("litellm" in c for c in recreate_cmds)
+    assert all("open-webui" not in c for c in recreate_cmds), (
+        "open-webui should not be force-recreated during a profile switch"
+    )
 
 
 def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(

@@ -1,3 +1,12 @@
+## Cold start
+
+For non-trivial work, read in this order:
+
+1. `README.md`
+2. `AGENTS.md`
+3. `dev/README.md`
+
+
 ## Developer journal
 Keep a running journal at `dev/journals/<agent_name>.md` (e.g.
 `dev/journals/codex.md`) to capture the story of the work (decisions, progress,

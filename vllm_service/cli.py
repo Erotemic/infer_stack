@@ -537,51 +537,190 @@ def _compose_up_with_router_recreate(
     *,
     detach: bool,
 ) -> None:
-    """Run ``compose up`` and force-recreate litellm + open-webui afterwards.
+    """Run ``compose up`` and refresh LiteLLM's model list to match the new render.
 
     A compose ``up`` against the rendered stack only restarts vLLM services
     whose specs changed. LiteLLM and Open WebUI keep their existing
     containers and would therefore serve stale model lists until something
-    else recreated them. Force-recreating them in a ``finally`` makes the
-    router refresh fire even when compose_up raises (the failure mode that
-    used to leave a stale model list advertised on ``/v1/models`` after a
-    profile switch).
+    else refreshed them. Two ways to do that:
 
-    A finer future design would diff the new router config against the
-    running one and use LiteLLM's admin API (``/model/new``,
-    ``/model/delete``) to add/drop only the affected aliases, leaving
-    unaffected vLLM services serving traffic uninterrupted. Worth doing
-    once a multi-model deployment makes the brief blip user-visible.
+    1. **Live refresh** (preferred): talk to LiteLLM's admin API
+       (``/model/new`` / ``/model/delete``) to diff and apply alias changes
+       in-process. LiteLLM and Open WebUI stay up — users hitting unchanged
+       models see no disruption. Skipped automatically on cold start or if
+       the admin API is unreachable.
+    2. **Container recreate** (fallback): force-recreate the litellm and
+       open-webui containers so they reload the rendered YAML on startup.
+       Brief user-visible downtime; used only when live refresh fails.
     """
     compose_file = generated_dir(cfg) / "docker-compose.yml"
     env_file = generated_dir(cfg) / ".env"
 
     _preflight_check_ports(cfg)
 
-    compose_up_failed: BaseException | None = None
+    compose_up(
+        cfg["runtime"]["compose_cmd"],
+        compose_file,
+        env_file,
+        detach=detach,
+        remove_orphans=True,
+    )
+
+    # If `up` failed it would have already raised; only do the router refresh
+    # in detached mode (foreground `up` keeps the user attached to logs and
+    # leaves cycling decisions to compose).
+    if not detach:
+        return
+
     try:
-        compose_up(
-            cfg["runtime"]["compose_cmd"],
-            compose_file,
-            env_file,
-            detach=detach,
-            remove_orphans=True,
+        _litellm_refresh_router_live(cfg)
+        return
+    except RouterRefreshError as ex:
+        print(
+            f"Live router refresh skipped ({ex}); "
+            "recreating litellm container to reload config from YAML "
+            "(open-webui stays up)..."
         )
-    except BaseException as ex:
-        compose_up_failed = ex
-        raise
-    finally:
-        # Only force-recreate the router when the main `up` succeeded. If `up`
-        # failed because litellm itself can't start (e.g. port conflict), then
-        # `compose_recreate_router` would just fail with the same root cause
-        # and its exception would mask the primary error the user needs to see.
-        if detach and compose_up_failed is None:
-            compose_recreate_router(
-                cfg["runtime"]["compose_cmd"],
-                compose_file,
-                env_file,
-                detach=True,
+
+    compose_recreate_router(
+        cfg["runtime"]["compose_cmd"],
+        compose_file,
+        env_file,
+        detach=True,
+    )
+
+
+class RouterRefreshError(RuntimeError):
+    """Live LiteLLM router refresh did not complete; caller should fall back."""
+
+
+def _resolve_env_refs(obj: Any, env: dict[str, str]) -> Any:
+    """Recursively replace ``os.environ/VAR`` strings with the value from ``env``.
+
+    Mirrors LiteLLM's YAML-load substitution so we can feed the admin API
+    literal credentials. If a referenced variable isn't in ``env`` the original
+    string is left alone — caller will get the upstream error to debug.
+    """
+    if isinstance(obj, str):
+        if obj.startswith("os.environ/"):
+            var = obj.removeprefix("os.environ/")
+            return env.get(var, obj)
+        return obj
+    if isinstance(obj, dict):
+        return {k: _resolve_env_refs(v, env) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_env_refs(v, env) for v in obj]
+    return obj
+
+
+def _litellm_refresh_router_live(cfg: dict[str, Any]) -> None:
+    """Sync the running LiteLLM router's model list to match the rendered YAML.
+
+    Diffs ``GET /model/info`` (current state in the running container) against
+    the rendered ``litellm_config.yaml`` (desired state), then applies
+    ``POST /model/delete`` and ``POST /model/new`` for the differences. Aliases
+    that didn't change keep serving traffic without interruption.
+
+    Raises ``RouterRefreshError`` on any failure (admin API unreachable,
+    auth missing, individual call fails); the caller falls back to the
+    full container-recreate path.
+    """
+    import yaml as _yaml
+
+    litellm_port = cfg.get("ports", {}).get("litellm")
+    if not litellm_port:
+        raise RouterRefreshError("litellm port not configured in cfg")
+    base = f"http://127.0.0.1:{litellm_port}"
+
+    env = parse_env_file(runtime_env_path(cfg))
+    master_key = env.get("LITELLM_MASTER_KEY", "").strip()
+    if not master_key:
+        raise RouterRefreshError("LITELLM_MASTER_KEY missing from rendered .env")
+    headers = {"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"}
+
+    config_path_ = runtime_litellm_config_path(cfg)
+    if not config_path_.exists():
+        raise RouterRefreshError(f"rendered litellm config not found at {config_path_}")
+    try:
+        desired_doc = _yaml.safe_load(config_path_.read_text(encoding="utf-8")) or {}
+    except _yaml.YAMLError as ex:
+        raise RouterRefreshError(f"could not parse {config_path_}: {ex}") from ex
+    desired_models = desired_doc.get("model_list") or []
+
+    # The rendered YAML keeps secrets as `os.environ/VAR` references so the
+    # file itself isn't sensitive. LiteLLM resolves these only at YAML-load
+    # time on container startup — the admin API takes literal values. Inline
+    # the actual env values now so /model/new gets a usable upstream.
+    desired_models = [_resolve_env_refs(m, env) for m in desired_models]
+
+    try:
+        resp = requests.get(f"{base}/model/info", headers=headers, timeout=5)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as ex:
+        raise RouterRefreshError(f"GET /model/info failed: {ex}") from ex
+    current_models = resp.json().get("data") or []
+
+    # Key by alias (model_name). Within an alias, the "upstream" identity is
+    # litellm_params.model (e.g. "openai/qwen3.5-9b"). If that changes, the
+    # alias points to a different service and must be re-added; if it matches,
+    # the alias is untouched and continues serving.
+    def upstream_of(entry):
+        return (entry.get("litellm_params") or {}).get("model")
+
+    current_by_alias = {m["model_name"]: m for m in current_models}
+    desired_by_alias = {m["model_name"]: m for m in desired_models}
+
+    to_delete_ids: list[str] = []
+    to_add: list[dict] = []
+
+    for alias, current in current_by_alias.items():
+        desired = desired_by_alias.get(alias)
+        if desired is None:
+            to_delete_ids.append(current["model_info"]["id"])
+        elif upstream_of(current) != upstream_of(desired):
+            to_delete_ids.append(current["model_info"]["id"])
+            to_add.append(desired)
+
+    for alias, desired in desired_by_alias.items():
+        if alias not in current_by_alias:
+            to_add.append(desired)
+
+    if not to_delete_ids and not to_add:
+        return
+
+    # Delete-before-add so the same alias can transition to a new upstream
+    # without LiteLLM rejecting a duplicate model_name.
+    for model_id in to_delete_ids:
+        try:
+            resp = requests.post(
+                f"{base}/model/delete",
+                headers=headers,
+                json={"id": model_id},
+                timeout=5,
             )
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as ex:
+            raise RouterRefreshError(f"DELETE id={model_id} failed: {ex}") from ex
+
+    for model in to_add:
+        try:
+            resp = requests.post(
+                f"{base}/model/new",
+                headers=headers,
+                json=model,
+                timeout=5,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as ex:
+            alias = model.get("model_name", "<unknown>")
+            raise RouterRefreshError(f"POST /model/new alias={alias} failed: {ex}") from ex
+
+    summary_parts = []
+    if to_delete_ids:
+        summary_parts.append(f"removed {len(to_delete_ids)} alias(es)")
+    if to_add:
+        summary_parts.append(f"added {len(to_add)} alias(es)")
+    print(f"Live LiteLLM router refresh: {', '.join(summary_parts)}.")
 
 
 def _preflight_check_ports(cfg: dict[str, Any]) -> None:

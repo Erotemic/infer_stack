@@ -186,13 +186,15 @@ def compose_recreate_router(
     *,
     detach: bool = True,
 ) -> None:
-    """Recreate the LiteLLM router and Open WebUI containers in place.
+    """Recreate the LiteLLM router container in place.
 
-    Refreshes their in-memory state (e.g. model alias lists) without touching
-    Postgres or any persistent volume. Healthy vLLM services are left alone.
+    Forces LiteLLM to reload its config from the rendered YAML. Open WebUI is
+    deliberately *not* recreated: it re-fetches ``/v1/models`` from LiteLLM
+    on user actions, so a brief stale-cache window is fine, while
+    force-recreating would log every user out of the chat UI.
     """
     args = ["up"]
     if detach:
         args.append("-d")
-    args.extend(["--remove-orphans", "--force-recreate", "--no-deps", "litellm", "open-webui"])
+    args.extend(["--remove-orphans", "--force-recreate", "--no-deps", "litellm"])
     run(_cmd(compose_cmd, compose_file, env_file, *args))

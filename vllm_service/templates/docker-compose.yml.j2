@@ -139,11 +139,15 @@ services:
     image: {{ lock.deployment.images.open_webui }}
     container_name: open-webui
     restart: unless-stopped
+    # No depends_on for litellm — Open WebUI has built-in retry logic for
+    # unreachable model providers, so it can start (and stay running) without
+    # litellm being available. Removing the dependency also stops Compose
+    # from cascading recreations along the chat-services chain: when only a
+    # vllm-* service config changes during `vllm-stack switch`, only that
+    # service is recreated and the Open WebUI session is preserved.
     depends_on:
       postgres-open-webui:
         condition: service_healthy
-      litellm:
-        condition: service_started
     environment:
       WEBUI_AUTH: "{{ 'True' if lock.deployment.open_webui.auth else 'False' }}"
       ENABLE_PERSISTENT_CONFIG: "False"
