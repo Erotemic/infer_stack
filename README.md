@@ -1,18 +1,26 @@
 # vLLM Service
 
-`vllm_service` manages **named serving profiles** for local and Kubernetes-backed inference.
+`vllm_service` manages **named stack profiles** for local and Kubernetes-backed inference.
 
-This repo can render and run those profiles through two backends:
+A stack profile is a small graph made from:
 
-* **Compose** for local single-host serving
-* **KubeAI** for Kubernetes-backed serving
+* **providers** — inference runtimes such as vLLM and Ollama
+* **gateways** — optional API routers such as LiteLLM
+* **frontends** — optional UIs such as Open WebUI
+* **routes** — optional public model aliases exposed through a gateway
 
-A serving profile bundles the model, the public served name, placement, and runtime settings.
+This repo can render those profiles through two backends:
+
+* **Compose** for local single-host serving. Compose supports vLLM, Ollama, optional LiteLLM, and optional Open WebUI.
+* **KubeAI** for Kubernetes-backed vLLM serving. KubeAI support is vLLM-only for now.
+
+The direct Ollama path can run without LiteLLM and without predeclaring models. vLLM profiles still use explicit runtimes, placement, and runtime settings.
 
 ## Main commands
 
 ```bash
-vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
+vllm-stack setup --backend compose --profile ollama-direct
+# or: vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
 vllm-stack list-profiles
 vllm-stack describe-profile <profile>
 vllm-stack validate
@@ -69,6 +77,41 @@ use the equivalent ``kubectl`` commands in the meantime.
 ```bash
 vllm-stack describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
 ```
+
+## Stack profile model
+
+Profiles are written as stack graphs. The main sections are `providers`, `gateways`, `frontends`, and `routes`. For details and examples, see [docs/stack-graph-profiles.md](docs/stack-graph-profiles.md).
+
+Common shapes:
+
+```text
+Open WebUI -> Ollama                         # ollama-direct, no LiteLLM
+Open WebUI -> LiteLLM -> vLLM                # classic vLLM compose profiles
+Open WebUI -> LiteLLM -> Ollama              # Ollama with stable aliases
+Open WebUI -> LiteLLM -> Ollama + vLLM       # mixed migration / test stacks
+Ollama API + vLLM API directly               # raw backend profiles
+```
+
+Custom provider models and custom profiles live in the configured `catalog.user_models_file`, which defaults to `~/.config/vllm_service/models.yaml`. New files should prefer provider-specific top-level keys:
+
+```yaml
+vllm_models:
+  my-vllm-model:
+    hf_model_id: org/model
+
+ollama_models:
+  my-ollama-model:
+    tag: qwen3.5:4b
+
+profiles:
+  my-stack:
+    providers: {}
+    gateways: {}
+    frontends: {}
+    routes: {}
+```
+
+`models:` is still interpreted as a vLLM model catalog for convenience, but new docs and recipes use `vllm_models:` / `ollama_models:`.
 
 ## Where config and rendered artifacts live
 
@@ -141,8 +184,9 @@ copy-paste into a terminal. See
 ``setup → describe → validate → render`` flow on the smallest test
 profiles.
 
-For a real running stack on a workstation, see
-[docs/demos/quickstart.md](docs/demos/quickstart.md).
+For a real running vLLM stack on a workstation, see
+[docs/demos/quickstart.md](docs/demos/quickstart.md). For direct Ollama on a dual GTX 1080 Ti style host, see
+[docs/demos/ollama_direct_quickstart.md](docs/demos/ollama_direct_quickstart.md).
 
 User-supplied paths on the CLI (`--file`, `--from-file`,
 `--resource-profiles-file`, `--output-dir`) still resolve against the
@@ -152,13 +196,20 @@ current working directory — they're meant to behave as typed.
 
 ## Backend 1: Compose
 
-Use Compose when you know exactly which profile you want and want the lowest-friction local deployment.
+Use Compose for local single-host deployments. It can render direct Ollama stacks, vLLM stacks, mixed Ollama+vLLM stacks, and raw backend-only stacks.
 
 ### Getting started
 
 Prerequisite: Docker and the `docker compose` plugin must be installed.
 
 ```bash
+# Direct Ollama, no LiteLLM and no predeclared models.
+vllm-stack setup --backend compose --profile ollama-direct
+vllm-stack validate --simulate-hardware 2x11
+vllm-stack render --yes --simulate-hardware 2x11
+vllm-stack up -d
+
+# Classic vLLM through LiteLLM/Open WebUI.
 vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
 vllm-stack validate
 vllm-stack render
@@ -171,29 +222,55 @@ vllm-stack up -d
 vllm-stack smoke-test
 ```
 
-The default Compose front door is:
+When LiteLLM is enabled, the default Compose front door is:
 
 ```text
 http://127.0.0.1:14042/v1
 ```
 
-unless you changed the LiteLLM port in config.
+When using `ollama-direct`, Open WebUI talks to Ollama directly and the Ollama API is available at:
 
-List models:
-
-```bash
-curl http://127.0.0.1:14042/v1/models
+```text
+http://127.0.0.1:11434
+http://127.0.0.1:11434/v1
 ```
 
-Send a request:
+unless you changed the relevant ports in config.
+
+List LiteLLM models when LiteLLM is enabled:
 
 ```bash
+source generated/.env
+curl http://127.0.0.1:14042/v1/models \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+```
+
+Send a request through LiteLLM:
+
+```bash
+source generated/.env
 curl http://127.0.0.1:14042/v1/chat/completions \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "qwen/qwen2.5-7b-instruct-turbo",
     "messages": [{"role": "user", "content": "Say hello in one sentence."}],
     "max_tokens": 64
+  }'
+```
+
+Pull and test a direct Ollama model:
+
+```bash
+docker compose -f generated/docker-compose.yml --env-file generated/.env exec ollama \
+  ollama pull qwen3.5:4b
+
+curl http://127.0.0.1:11434/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3.5:4b",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+    "stream": false
   }'
 ```
 
@@ -223,37 +300,33 @@ volume are preserved across the toggle.
 
 ### Persistent state and database layout
 
-Compose runs **two** separate Postgres containers:
+Compose renders stateful services only when their components are enabled:
 
-* `postgres-open-webui` — used only by Open WebUI for chats, accounts,
-  and settings. Backed by `state.postgres_open_webui`.
-* `postgres-litellm` — used only by LiteLLM for router state. Backed by
-  `state.postgres_litellm`.
+* `postgres-open-webui` — rendered only when Open WebUI is enabled. It stores chats, accounts, and settings in `state.postgres_open_webui`.
+* `postgres-litellm` — rendered only when LiteLLM is enabled. It stores router state in `state.postgres_litellm`.
+* `ollama` — rendered only when the Ollama provider is enabled. Its model store is `state.ollama`, mounted at `/root/.ollama`.
+* vLLM runtimes mount `state.hf_cache` for Hugging Face weights and `state.vllm_cache` for compiled artifacts.
 
-Each container has its own `POSTGRES_DB`, `POSTGRES_USER`, and
-`POSTGRES_PASSWORD`, sourced from `.env` keys:
+Each Postgres container has its own `POSTGRES_DB`, `POSTGRES_USER`, and
+`POSTGRES_PASSWORD`, sourced from component-specific `.env` keys. There is no shared Postgres instance and no `postgres-init` bootstrap service.
 
-* `OPENWEBUI_POSTGRES_DB` / `_USER` / `_PASSWORD`
-* `LITELLM_POSTGRES_DB` / `_USER` / `_PASSWORD`
-
-There is no shared Postgres instance and no `postgres-init` bootstrap
-service — each container creates its own database the first time its
-volume is initialized.
-
-Open WebUI chat history lives in the Open WebUI Postgres
-container/volume. LiteLLM state lives in the LiteLLM Postgres
-container/volume. Chat history is **not** tied to the model currently
-being served, so after a profile switch old chats may reference model
-IDs the router no longer advertises — that is expected.
+Open WebUI chat history is **not** tied to the model currently being served, so after a profile switch old chats may reference model IDs the current gateway no longer advertises — that is expected.
 
 ### Operational tips
 
 Prefer scoping commands to specific services rather than relying on
-container names:
+container names. Use only the services rendered by the active profile:
 
 ```bash
+# LiteLLM gateway profile
 docker compose -f generated/docker-compose.yml --env-file generated/.env logs -f litellm
-docker compose -f generated/docker-compose.yml --env-file generated/.env exec postgres-open-webui psql -U "$OPENWEBUI_POSTGRES_USER" "$OPENWEBUI_POSTGRES_DB"
+
+# Direct Ollama profile
+docker compose -f generated/docker-compose.yml --env-file generated/.env logs -f ollama
+
+# Open WebUI database, when Open WebUI is enabled
+docker compose -f generated/docker-compose.yml --env-file generated/.env exec postgres-open-webui \
+  psql -U "$OPENWEBUI_POSTGRES_USER" "$OPENWEBUI_POSTGRES_DB"
 ```
 
 You do not need to delete any volume during normal operation. If you
@@ -276,11 +349,11 @@ vllm-stack switch <profile> --apply
 ```
 
 `switch --apply` re-renders from the updated `config.yaml`, brings the
-stack up convergently with `--remove-orphans` (so vLLM services that
-are no longer in the rendered compose file are dropped), and — if the
-LiteLLM router config changed — force-recreates the `litellm` and
-`open-webui` containers in place so they pick up the new alias list.
-Both Postgres volumes are left untouched.
+stack up convergently with `--remove-orphans` so components/runtimes that
+are no longer in the rendered compose file are dropped. When LiteLLM is enabled
+and its router config changes, `switch --apply` force-recreates `litellm` and
+`open-webui` in place so they pick up the new alias list. Postgres volumes and
+provider caches are left untouched.
 
 ### Protocol modes for base vs. instruct models
 
@@ -768,9 +841,11 @@ Start with **Compose** if you want:
 
 Move to **KubeAI** when you want:
 
-* the same profile model on Kubernetes
+* vLLM runtimes on Kubernetes
 * KubeAI’s OpenAI-compatible front door
 * profile deployment through Kubernetes artifacts
+
+KubeAI rendering is vLLM-only for now. Profiles that enable Ollama, LiteLLM, or Open WebUI are rejected for `--backend kubeai`.
 
 A good workflow is:
 

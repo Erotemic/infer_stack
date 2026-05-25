@@ -1,5 +1,8 @@
 # Compose recipe: Pythia 6.9B + Pythia 2.8B + Qwen3.6-35B-A3B on a 4x96GB host
 
+
+> Schema note: built-in profiles now resolve to stack-graph profiles. vLLM runtimes live under `providers.vllm.runtimes`, LiteLLM routes live under `routes`, and direct Ollama profiles can run without LiteLLM.
+
 This recipe uses the built-in `pythia-qwen3.6-mixed-4x96` profile to serve
 three models behind a single LiteLLM router on a machine with **4 x 96GB
 GPUs**:
@@ -120,7 +123,7 @@ box.
 If `qwen3_coder` parses tool calls poorly against your specific prompts,
 `qwen3_xml` is a manual fallback worth testing — but it is not what the
 model card recommends. To try it, change the `parser:` value in
-`default-profiles.yaml` (or in a local `models.yaml` override) and rerun
+`default-profiles.yaml` (or in a local stack profile under `models.yaml`) and rerun
 the targeted Qwen restart above.
 
 ---

@@ -52,11 +52,11 @@ python manage.py setup --backend compose
 
 ## 3. Write the local model and profile definitions
 
-Overwrite `models.yaml` with:
+Write provider-specific model definitions and a stack profile in `models.yaml`:
 
 ```bash
 cat > models.yaml <<'EOF'
-models:
+vllm_models:
   qwen3.5-122b-a10b-local:
     hf_model_id: Qwen/Qwen3.5-122B-A10B
     tokenizer_name: Qwen/Qwen3.5-122B-A10B
@@ -76,38 +76,47 @@ models:
 
 profiles:
   qwen3.5-122b-a10b-tp4-128k-local:
-    description: "Single Qwen3.5-122B-A10B service across all 4 GPUs at 128k context."
+    description: "Single Qwen3.5-122B-A10B vLLM runtime across all 4 GPUs at 128k context."
     vllm:
       enable_responses_api_store: false
       logging_level: INFO
-    services:
-      - service_name: qwen-122b
-        model: qwen3.5-122b-a10b-local
-        served_model_name: qwen3.5-122b-a10b-128k
-        placement:
-          strategy: exact
-          gpu_indices: [0, 1, 2, 3]
-        topology:
-          tensor_parallel_size: 4
-        runtime:
-          max_model_len: 131072
-          gpu_memory_utilization: 0.95
-          max_num_batched_tokens: 1024
-          max_num_seqs: 1
-          enable_prefix_caching: false
-        extra_args:
-          - --language-model-only
-          - --reasoning-parser
-          - qwen3
-          - --enable-log-requests
-          - --max-log-len
-          - "4000"
-          - --enable-prompt-tokens-details
-          - --enable-force-include-usage
-
-    router:
-      aliases:
-        qwen3.5-122b-a10b-128k: qwen-122b
+    providers:
+      vllm:
+        runtimes:
+          qwen-122b:
+            model: qwen3.5-122b-a10b-local
+            served_model_name: qwen3.5-122b-a10b-128k
+            placement:
+              strategy: exact
+              gpu_indices: [0, 1, 2, 3]
+            topology:
+              tensor_parallel_size: 4
+            runtime:
+              max_model_len: 131072
+              gpu_memory_utilization: 0.95
+              max_num_batched_tokens: 1024
+              max_num_seqs: 1
+              enable_prefix_caching: false
+            extra_args:
+              - --language-model-only
+              - --reasoning-parser
+              - qwen3
+              - --enable-log-requests
+              - --max-log-len
+              - "4000"
+              - --enable-prompt-tokens-details
+              - --enable-force-include-usage
+    gateways:
+      litellm:
+        enabled: true
+    frontends:
+      open_webui:
+        enabled: true
+        provider: litellm
+    routes:
+      qwen3.5-122b-a10b-128k:
+        provider: vllm
+        runtime: qwen-122b
 EOF
 ```
 

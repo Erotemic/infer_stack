@@ -1,13 +1,26 @@
 # Persistent caches and warm restarts
 
-Two on-disk caches keep restart time short without changing model semantics or
-runtime performance. Both are mounted into every rendered vLLM Compose
-service. Neither replaces the cost of moving model weights into GPU memory —
-that work happens on every container start.
+Provider-specific on-disk state keeps restart time short without changing model
+semantics or runtime performance. vLLM runtimes use Hugging Face and vLLM
+caches. Ollama uses its own model store. None of these replaces the cost of
+moving model weights into GPU memory — that work happens whenever the provider
+process loads a model.
 
 ## What gets cached
 
-### Hugging Face cache — `state.hf_cache → /root/.cache/huggingface`
+### Ollama model store — `state.ollama -> /root/.ollama`
+
+Ollama downloads GGUF/model blobs into `/root/.ollama`. The Compose template
+mounts `state.ollama` there whenever the Ollama provider is enabled. Direct
+Ollama profiles therefore survive `down`, `up`, `switch`, and `render` without
+re-pulling models.
+
+Ollama model residency is controlled by daemon/request settings such as
+`keep_alive` / `OLLAMA_KEEP_ALIVE`. A short keep-alive can let a mostly idle
+home-assistant-style backend unload models after use; the next request pays the
+load cost again.
+
+### Hugging Face cache — `state.hf_cache -> /root/.cache/huggingface`
 
 The Hugging Face Hub client downloads model weights, tokenizers, and config
 files into this directory the first time a model is requested. Persisting the
@@ -17,7 +30,7 @@ this can be the difference between minutes and hours of cold start.
 
 This mount existed before the vLLM cache was added; it is unchanged.
 
-### vLLM cache — `state.vllm_cache → /root/.cache/vllm`
+### vLLM cache — `state.vllm_cache -> /root/.cache/vllm`
 
 vLLM stores compiled artifacts under `VLLM_CACHE_ROOT` (defaulted to
 `/root/.cache/vllm` inside the container). The most expensive entries are
@@ -75,7 +88,16 @@ docker compose -f generated/docker-compose.yml up -d \
 
 For a full stack restart (e.g. after `vllm-stack render` against a new
 profile), `vllm-stack down && vllm-stack up -d` is the safe path; persistent
-volumes (Postgres, OWUI data, both caches) are not touched by `down`.
+volumes and bind mounts (Postgres, Open WebUI data, Ollama model store, and
+vLLM caches) are not touched by `down`.
+
+For direct Ollama model pulls, operate on the shared daemon instead of replacing
+the container:
+
+```bash
+docker compose -f generated/docker-compose.yml --env-file generated/.env exec ollama \
+  ollama pull qwen3.5:4b
+```
 
 ## Verifying the cache is being reused
 

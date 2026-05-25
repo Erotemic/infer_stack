@@ -49,8 +49,10 @@ mkdir -p /tmp/vllm-stack-demo/config /tmp/vllm-stack-demo/data
 
 ## 2. Set up a profile
 
-Pick the smallest test profile (``test-single-11gb`` runs SmolLM2 135M
-on a single GPU) and write a config for it:
+Pick the smallest vLLM test profile (``test-single-11gb`` runs SmolLM2 135M
+on a single GPU) and write a config for it. This demo exercises the classic
+`Open WebUI -> LiteLLM -> vLLM` path; use
+``docs/demos/ollama_direct_quickstart.md`` for the no-LiteLLM Ollama path:
 
 ```bash
 export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
@@ -59,9 +61,9 @@ vllm-stack setup --backend compose --profile test-single-11gb
 ```
 
 You should see ``Wrote …/config.yaml`` and a summary of the configured
-backend / active profile. After this, ``config.yaml`` and ``models.yaml``
-exist under ``$VLLM_SERVICE_CONFIG_DIR`` and the rest of the workflow
-operates on them.
+backend / active profile. After this, ``config.yaml`` exists under
+``$VLLM_SERVICE_CONFIG_DIR``. A ``models.yaml`` file is only needed when you
+add local ``vllm_models``, ``ollama_models``, or custom stack profiles.
 
 ## 3. List the catalog
 

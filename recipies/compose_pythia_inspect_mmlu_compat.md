@@ -1,5 +1,8 @@
 # Compose recipe: Pythia with LiteLLM-only chat compatibility (Inspect / MMLU)
 
+
+> Schema note: built-in profiles now resolve to stack-graph profiles. vLLM runtimes live under `providers.vllm.runtimes`, LiteLLM routes live under `routes`, and direct Ollama profiles can run without LiteLLM.
+
 This recipe uses the built-in `pythia-inspect-mmlu-compat` profile to
 serve two Pythia base models as completions models, with a LiteLLM-only
 adapter that flattens chat-shaped requests into a plain prompt before

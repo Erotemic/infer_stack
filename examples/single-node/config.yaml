@@ -19,10 +19,10 @@ ports:
   litellm: 14042
   open_webui: 13000
   postgres: 15432
+  ollama: 11434
 state:
   hf_cache: ./state/hf-cache
-  open_webui: ./state/open-webui
-  postgres: ./state/postgres
+  vllm_cache: ./state/vllm-cache
   runtime: ./state/runtime
 cluster:
   namespace: kubeai
@@ -49,25 +49,34 @@ resource_profiles:
       memory: 24Gi
 profiles:
   qwen-single-node:
-    description: Run one small Qwen model and one larger Qwen model on a single multi-GPU box.
-    services:
-      - service_name: qwen-small
-        model: qwen-small
-        resource_profile: blackwell-96gb:1
-        placement:
-          strategy: first_fit
-          gpu_count: 1
-        topology:
-          tensor_parallel_size: 1
-        min_replicas: 0
-        max_replicas: 1
-      - service_name: qwen-large
-        model: qwen-large
-        resource_profile: blackwell-96gb:4
-        placement:
-          strategy: first_fit
-          gpu_count: 4
-        topology:
-          tensor_parallel_size: 4
-        min_replicas: 0
-        max_replicas: 1
+    description: Run one small Qwen model and one larger Qwen model on a single KubeAI node.
+    providers:
+      vllm:
+        runtimes:
+          qwen-small:
+            model: qwen-small
+            resource_profile: blackwell-96gb:1
+            placement:
+              strategy: first_fit
+              gpu_count: 1
+            topology:
+              tensor_parallel_size: 1
+            min_replicas: 0
+            max_replicas: 1
+          qwen-large:
+            model: qwen-large
+            resource_profile: blackwell-96gb:4
+            placement:
+              strategy: first_fit
+              gpu_count: 4
+            topology:
+              tensor_parallel_size: 4
+            min_replicas: 0
+            max_replicas: 1
+    gateways:
+      litellm:
+        enabled: false
+    frontends:
+      open_webui:
+        enabled: false
+    routes: {}
