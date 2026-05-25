@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -14,8 +15,8 @@ PROFILE_NAME_ALIASES = {
 
 
 def sanitize_name(value: str) -> str:
-    value = value.strip().lower()
-    out = []
+    value = str(value).strip().lower()
+    out: list[str] = []
     prev_dash = False
     for char in value:
         if char.isalnum():
@@ -29,32 +30,41 @@ def sanitize_name(value: str) -> str:
     return sanitized or "profile"
 
 
-def canonical_profile_name(name: str) -> str:
+def canonical_profile_name(name: str | None) -> str | None:
+    if name is None:
+        return None
     return PROFILE_NAME_ALIASES.get(name, name)
 
 
-def normalize_model_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+def _list(value: Any, default: list[Any] | None = None) -> list[Any]:
+    if value is None:
+        return list(default or [])
+    if isinstance(value, list):
+        return deepcopy(value)
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def normalize_vllm_models(catalog: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, raw in (catalog or {}).items():
-        entry = deepcopy(raw)
+        entry = deepcopy(raw) or {}
         hf_model_id = entry.get("hf_model_id", "")
         url = entry.get("url") or (f"hf://{hf_model_id}" if hf_model_id else "")
         defaults = deepcopy(entry.get("defaults", {}))
-        notes = list(entry.get("notes", []) or [])
-        caveats = list(entry.get("caveats", []) or [])
         supported_protocols = entry.get("supported_protocols")
         if supported_protocols is None:
             supported_protocols = ["chat", "completions"]
-        else:
-            supported_protocols = [str(p) for p in supported_protocols]
         normalized[key] = {
             "key": key,
+            "provider": "vllm",
             "canonical_key": sanitize_name(entry.get("canonical_key", key)),
             "hf_model_id": hf_model_id,
             "url": url,
             "family": entry.get("family", ""),
-            "modalities": list(entry.get("modalities", ["text"])),
-            "supported_protocols": supported_protocols,
+            "modalities": _list(entry.get("modalities"), ["text"]),
+            "supported_protocols": [str(p) for p in supported_protocols],
             "reasoning": deepcopy(entry.get("reasoning", {})),
             "tokenizer_name": entry.get("tokenizer_name") or entry.get("tokenizer") or entry.get("served_model_name") or key,
             "logical_model_name": entry.get("logical_model_name") or entry.get("served_model_name") or key,
@@ -64,17 +74,44 @@ def normalize_model_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
             "preferred_gpu_count": entry.get("preferred_gpu_count", 1),
             "context_window": entry.get("context_window"),
             "defaults": defaults,
-            "engine": str(entry.get("engine", "VLLM")).upper(),
+            "engine": "VLLM",
             "resource_profile": entry.get("resource_profile", ""),
             "priority_class_name": entry.get("priority_class_name"),
             "tool_calling": deepcopy(entry.get("tool_calling", {})),
             "thinking_history_policy": entry.get("thinking_history_policy", "keep_final_only"),
             "features": deepcopy(entry.get("features", ["TextGeneration"])),
             "safe_defaults": deepcopy(entry.get("safe_defaults", defaults)),
-            "notes": notes,
-            "caveats": caveats,
+            "notes": _list(entry.get("notes")),
+            "caveats": _list(entry.get("caveats")),
         }
     return normalized
+
+
+def normalize_ollama_models(catalog: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, raw in (catalog or {}).items():
+        entry = deepcopy(raw) or {}
+        tag = entry.get("tag") or entry.get("ollama_model") or entry.get("model") or key
+        normalized[key] = {
+            "key": key,
+            "provider": "ollama",
+            "tag": str(tag),
+            "served_model_name": entry.get("served_model_name") or sanitize_name(str(tag)),
+            "logical_model_name": entry.get("logical_model_name") or entry.get("served_model_name") or sanitize_name(str(tag)),
+            "modalities": _list(entry.get("modalities"), ["text"]),
+            "supported_protocols": [str(p) for p in _list(entry.get("supported_protocols"), ["chat"])],
+            "context_window": entry.get("context_window"),
+            "defaults": deepcopy(entry.get("defaults", {})),
+            "notes": _list(entry.get("notes")),
+            "caveats": _list(entry.get("caveats")),
+        }
+    return normalized
+
+
+# Compatibility view used by older helper commands/tests. Prefer provider-specific
+# catalogs in new code.
+def normalize_model_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+    return normalize_vllm_models(catalog)
 
 
 def _infer_protocol_mode(profile_name: str, logical_model_name: str, raw: dict[str, Any]) -> str:
@@ -92,173 +129,172 @@ def _infer_protocol_mode(profile_name: str, logical_model_name: str, raw: dict[s
     return "chat"
 
 
-def _served_aliases(public_name: str, logical_model_name: str, served_model_name: str, aliases: list[str] | None = None) -> list[str]:
+def _normalize_bool_map(raw: Any, default_enabled: bool = False) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return deepcopy(raw)
+    if raw in (None, "auto"):
+        return {"enabled": "auto"}
+    return {"enabled": bool(raw) if raw is not None else default_enabled}
+
+
+def _normalize_components(profile: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    providers = deepcopy(profile.get("providers", {}))
+    gateways = deepcopy(profile.get("gateways", {}))
+    frontends = deepcopy(profile.get("frontends", {}))
+
+    # Convenience/older shape: components: {ollama: true, litellm: false, ...}
+    components = deepcopy(profile.get("components", {}) or {})
+    for name in ["ollama", "vllm"]:
+        if name in components and name not in providers:
+            providers[name] = _normalize_bool_map(components[name])
+    if "litellm" in components and "litellm" not in gateways:
+        gateways["litellm"] = _normalize_bool_map(components["litellm"])
+    if "open_webui" in components and "open_webui" not in frontends:
+        frontends["open_webui"] = _normalize_bool_map(components["open_webui"])
+
+    providers.setdefault("vllm", {})
+    providers.setdefault("ollama", {"enabled": "auto"})
+    gateways.setdefault("litellm", {"enabled": "auto"})
+    frontends.setdefault("open_webui", {"enabled": "auto", "provider": "auto"})
+    return providers, gateways, frontends
+
+
+def _route_aliases(route_name: str, raw: dict[str, Any]) -> list[str]:
+    aliases = raw.get("aliases")
+    if aliases is None:
+        aliases = raw.get("served_aliases")
+    if aliases is None:
+        aliases = [route_name]
+    elif isinstance(aliases, str):
+        aliases = [aliases]
+    else:
+        aliases = list(aliases)
+    if route_name not in aliases:
+        aliases.insert(0, route_name)
     ordered: list[str] = []
-    for candidate in [public_name, logical_model_name, served_model_name, *(aliases or [])]:
-        if candidate and candidate not in ordered:
-            ordered.append(candidate)
+    for alias in aliases:
+        if alias and alias not in ordered:
+            ordered.append(str(alias))
     return ordered
 
 
-def _normalize_service_from_profile(public_name: str, raw: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
-    logical_model_name = (
-        raw.get("logical_model_name")
-        or raw.get("helm_model_name")
-        or raw.get("model_name")
-        or model.get("logical_model_name")
-        or model["served_model_name"]
-    )
-    served_model_name = raw.get("served_model_name") or logical_model_name
-    protocol_mode = _infer_protocol_mode(public_name, logical_model_name, raw)
-    return {
-        "service_name": sanitize_name(raw.get("service_name") or raw.get("runtime_service_name") or public_name),
-        "base_model": raw.get("base_model") or raw.get("model"),
-        "public_name": public_name,
-        "kubernetes_name": sanitize_name(public_name),
-        "logical_model_name": logical_model_name,
-        "served_model_name": served_model_name,
-        "served_aliases": _served_aliases(public_name, logical_model_name, served_model_name, raw.get("served_aliases")),
-        "protocol_mode": protocol_mode,
-        "engine": str(raw.get("engine", model.get("engine", "VLLM"))).upper(),
-        "resource_profile": raw.get("resource_profile", model.get("resource_profile", "")),
-        "placement": deepcopy(raw.get("placement", {})),
-        "topology": deepcopy(raw.get("topology", {})),
-        "runtime": deepcopy(raw.get("runtime", {})),
-        "extra_args": deepcopy(raw.get("extra_args", [])),
-        "reasoning": deepcopy(raw.get("reasoning", {})),
-        "tool_calling": deepcopy(raw.get("tool_calling", {})),
-        "chat_compat": deepcopy(raw.get("chat_compat", {})),
-        "min_replicas": int(raw.get("min_replicas", model.get("defaults", {}).get("min_replicas", 0))),
-        "max_replicas": int(raw.get("max_replicas", model.get("defaults", {}).get("max_replicas", 1))),
-        "priority_class_name": raw.get("priority_class_name", model.get("priority_class_name")),
-        "tags": list(raw.get("tags", []) or []),
-        "audit_notes": list(raw.get("audit_notes", []) or []),
-        "notes": list(raw.get("notes", []) or []),
-        "benchmark_transport": deepcopy(raw.get("benchmark_transport", raw.get("transport", {}))),
-    }
-
-
-def _normalize_legacy_profile(name: str, raw: dict[str, Any], models: dict[str, Any]) -> dict[str, Any]:
+def _legacy_profile_to_stack(name: str, raw: dict[str, Any], vllm_models: dict[str, Any]) -> dict[str, Any]:
     services = deepcopy(raw.get("services", []))
+    if not services and (raw.get("model") or raw.get("base_model")):
+        services = [deepcopy(raw)]
     aliases = deepcopy(raw.get("router", {}).get("aliases", {}))
-    normalized_services = []
+    runtimes: dict[str, Any] = {}
+    routes: dict[str, Any] = {}
     for index, service in enumerate(services):
-        service_name = sanitize_name(service.get("service_name") or service.get("name") or f"{name}-{index + 1}")
+        runtime_name = sanitize_name(service.get("service_name") or service.get("runtime") or service.get("name") or (name if len(services) == 1 else f"runtime-{index + 1}"))
         model_key = service.get("base_model") or service.get("model")
-        if model_key not in models:
-            raise KeyError(f"Unknown model: {model_key}")
-        model = models[model_key]
-        served_model_name = service.get("served_model_name") or model["served_model_name"]
-        logical_model_name = service.get("logical_model_name") or next(
-            (alias for alias, target in aliases.items() if target == (service.get("service_name") or service.get("name"))),
-            served_model_name,
-        )
-        public_name = sanitize_name(service.get("public_name") or (name if len(services) == 1 else f"{name}-{service_name}"))
+        if model_key not in vllm_models:
+            raise KeyError(f"Unknown vLLM model: {model_key}")
+        model = vllm_models[model_key]
+        public_name = sanitize_name(service.get("public_name") or (name if len(services) == 1 else f"{name}-{runtime_name}"))
+        logical_model_name = service.get("logical_model_name") or model.get("logical_model_name") or model.get("served_model_name") or model_key
+        served_model_name = service.get("served_model_name") or model.get("served_model_name") or logical_model_name
         protocol_mode = _infer_protocol_mode(public_name, logical_model_name, service)
-        normalized_services.append(
-            {
-                "service_name": service_name,
-                "base_model": model_key,
-                "public_name": public_name,
-                "kubernetes_name": sanitize_name(public_name),
-                "logical_model_name": logical_model_name,
-                "served_model_name": served_model_name,
-                "served_aliases": _served_aliases(public_name, logical_model_name, served_model_name, list(aliases.keys())),
-                "protocol_mode": protocol_mode,
-                "engine": str(service.get("engine", model.get("engine", "VLLM"))).upper(),
-                "resource_profile": service.get("resource_profile", model.get("resource_profile", "")),
-                "placement": deepcopy(service.get("placement", {})),
-                "topology": deepcopy(service.get("topology", {})),
-                "runtime": deepcopy(service.get("runtime", {})),
-                "extra_args": deepcopy(service.get("extra_args", [])),
-                "reasoning": deepcopy(service.get("reasoning", {})),
-                "tool_calling": deepcopy(service.get("tool_calling", {})),
-                "chat_compat": deepcopy(service.get("chat_compat", {})),
-                "min_replicas": int(service.get("min_replicas", model.get("defaults", {}).get("min_replicas", 0))),
-                "max_replicas": int(service.get("max_replicas", model.get("defaults", {}).get("max_replicas", 1))),
-                "priority_class_name": service.get("priority_class_name", model.get("priority_class_name")),
-                "tags": list(raw.get("tags", []) or []),
-                "audit_notes": list(raw.get("audit_notes", []) or []),
-                "notes": list(raw.get("notes", []) or []),
-                "benchmark_transport": deepcopy(raw.get("benchmark_transport", raw.get("transport", {}))),
-            }
-        )
-    primary = normalized_services[0] if normalized_services else None
+        runtimes[runtime_name] = {
+            "model": model_key,
+            "public_name": public_name,
+            "logical_model_name": logical_model_name,
+            "served_model_name": served_model_name,
+            "protocol_mode": protocol_mode,
+            "placement": deepcopy(service.get("placement", {})),
+            "topology": deepcopy(service.get("topology", {})),
+            "runtime": deepcopy(service.get("runtime", {})),
+            "extra_args": deepcopy(service.get("extra_args", [])),
+            "reasoning": deepcopy(service.get("reasoning", {})),
+            "tool_calling": deepcopy(service.get("tool_calling", {})),
+            "chat_compat": deepcopy(service.get("chat_compat", {})),
+            "resource_profile": service.get("resource_profile", model.get("resource_profile", "")),
+            "min_replicas": int(service.get("min_replicas", model.get("defaults", {}).get("min_replicas", 0))),
+            "max_replicas": int(service.get("max_replicas", model.get("defaults", {}).get("max_replicas", 1))),
+            "priority_class_name": service.get("priority_class_name", model.get("priority_class_name")),
+            "tags": list(service.get("tags", raw.get("tags", [])) or []),
+            "audit_notes": list(service.get("audit_notes", raw.get("audit_notes", [])) or []),
+            "notes": list(service.get("notes", raw.get("notes", [])) or []),
+            "benchmark_transport": deepcopy(service.get("benchmark_transport", service.get("transport", raw.get("benchmark_transport", raw.get("transport", {}))))),
+            "publish_port": bool(service.get("publish_port", False)),
+        }
+    # Convert old router alias map to route map.
+    if aliases:
+        for alias, target in aliases.items():
+            routes[str(alias)] = {"provider": "vllm", "runtime": sanitize_name(str(target))}
+    else:
+        for runtime_name, rt in runtimes.items():
+            route_name = str(rt.get("public_name") or rt.get("logical_model_name") or rt.get("served_model_name") or runtime_name)
+            routes[route_name] = {"provider": "vllm", "runtime": runtime_name}
     return {
         "name": name,
-        "public_name": primary["public_name"] if primary else name,
         "description": raw.get("description", ""),
-        "kind": "legacy-stack-profile" if len(normalized_services) > 1 else "serving-profile",
-        "base_model": primary["base_model"] if primary else "",
-        "logical_model_name": primary["logical_model_name"] if primary else "",
-        "served_model_name": primary["served_model_name"] if primary else "",
-        "served_aliases": primary["served_aliases"] if primary else [],
-        "protocol_mode": primary["protocol_mode"] if primary else "chat",
-        "engine": primary["engine"] if primary else "VLLM",
-        "resource_profile": primary["resource_profile"] if primary else "",
-        "service_name": primary["service_name"] if primary else sanitize_name(name),
-        "kubernetes_name": primary["kubernetes_name"] if primary else sanitize_name(name),
-        "services": normalized_services,
+        "kind": "stack",
+        "providers": {
+            "vllm": {"enabled": True, "runtimes": runtimes},
+            "ollama": {"enabled": False},
+        },
+        "gateways": {"litellm": {"enabled": True}},
+        "frontends": {"open_webui": {"enabled": True, "provider": "litellm"}},
+        "routes": routes,
         "policy": deepcopy(raw.get("policy", {})),
         "vllm": deepcopy(raw.get("vllm", {})),
-        "router": {"aliases": aliases},
-        "benchmark_transport": deepcopy(raw.get("benchmark_transport", raw.get("transport", {}))),
         "tags": list(raw.get("tags", []) or []),
         "audit_notes": list(raw.get("audit_notes", []) or []),
         "notes": list(raw.get("notes", []) or []),
     }
 
 
-def normalize_profile_catalog(catalog: dict[str, Any], models: dict[str, Any]) -> dict[str, Any]:
+def _normalize_route_map(routes_raw: Any) -> dict[str, Any]:
+    if routes_raw is None:
+        return {}
+    if isinstance(routes_raw, list):
+        out: dict[str, Any] = {}
+        for item in routes_raw:
+            raw = deepcopy(item)
+            name = str(raw.pop("name", raw.get("alias", raw.get("model", "route"))))
+            out[name] = raw
+        return out
+    return deepcopy(routes_raw)
+
+
+def normalize_stack_profiles(catalog: dict[str, Any], vllm_models: dict[str, Any], ollama_models: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for original_name, raw in (catalog or {}).items():
         name = original_name
-        profile = deepcopy(raw)
+        profile = deepcopy(raw) or {}
         try:
-            if "services" in profile:
-                normalized[name] = _normalize_legacy_profile(name, profile, models)
-                continue
-            model_key = profile.get("base_model") or profile.get("model")
-            if model_key not in models:
-                raise KeyError(f"Unknown model: {model_key}")
-            model = models[model_key]
-            public_name = sanitize_name(profile.get("public_name") or name)
-            service = _normalize_service_from_profile(public_name, profile, model)
-            normalized[name] = {
-                "name": name,
-                "public_name": public_name,
-                "description": profile.get("description", ""),
-                "kind": "serving-profile",
-                "base_model": service["base_model"],
-                "logical_model_name": service["logical_model_name"],
-                "served_model_name": service["served_model_name"],
-                "served_aliases": service["served_aliases"],
-                "protocol_mode": service["protocol_mode"],
-                "engine": service["engine"],
-                "resource_profile": service["resource_profile"],
-                "service_name": service["service_name"],
-                "kubernetes_name": service["kubernetes_name"],
-                "services": [service],
-                "policy": deepcopy(profile.get("policy", {})),
-                "vllm": deepcopy(profile.get("vllm", {})),
-                "router": {"aliases": {alias: service["service_name"] for alias in service["served_aliases"]}},
-                "benchmark_transport": deepcopy(profile.get("benchmark_transport", profile.get("transport", {}))),
-                "tags": list(profile.get("tags", []) or []),
-                "audit_notes": list(profile.get("audit_notes", []) or []),
-                "notes": list(profile.get("notes", []) or []),
-            }
+            if "providers" not in profile and "routes" not in profile and "components" not in profile:
+                stack = _legacy_profile_to_stack(name, profile, vllm_models)
+            else:
+                providers, gateways, frontends = _normalize_components(profile)
+                stack = {
+                    "name": name,
+                    "description": profile.get("description", ""),
+                    "kind": profile.get("kind", "stack"),
+                    "providers": providers,
+                    "gateways": gateways,
+                    "frontends": frontends,
+                    "routes": _normalize_route_map(profile.get("routes", {})),
+                    "policy": deepcopy(profile.get("policy", {})),
+                    "vllm": deepcopy(profile.get("vllm", {})),
+                    "tags": list(profile.get("tags", []) or []),
+                    "audit_notes": list(profile.get("audit_notes", []) or []),
+                    "notes": list(profile.get("notes", []) or []),
+                }
+            normalized[name] = stack
         except KeyError as ex:
             normalized[name] = {
                 "name": name,
-                "public_name": sanitize_name(profile.get("public_name") or name),
                 "description": profile.get("description", ""),
                 "kind": "invalid-profile",
                 "catalog_error": str(ex),
-                "services": [],
+                "providers": {},
+                "gateways": {},
+                "frontends": {},
+                "routes": {},
                 "policy": deepcopy(profile.get("policy", {})),
                 "vllm": deepcopy(profile.get("vllm", {})),
-                "router": deepcopy(profile.get("router", {})),
-                "benchmark_transport": deepcopy(profile.get("benchmark_transport", profile.get("transport", {}))),
                 "tags": list(profile.get("tags", []) or []),
                 "audit_notes": list(profile.get("audit_notes", []) or []),
                 "notes": list(profile.get("notes", []) or []),
@@ -266,17 +302,37 @@ def normalize_profile_catalog(catalog: dict[str, Any], models: dict[str, Any]) -
     return normalized
 
 
+# Compatibility function name used in a few imports.
+def normalize_profile_catalog(catalog: dict[str, Any], models: dict[str, Any]) -> dict[str, Any]:
+    return normalize_stack_profiles(catalog, normalize_vllm_models(models), {})
+
+
 def profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
+    providers = []
+    p = profile.get("providers", {}) or {}
+    if (p.get("ollama") or {}).get("enabled") not in (False, "false", None):
+        providers.append("ollama")
+    vllm_runtimes = ((p.get("vllm") or {}).get("runtimes") or {})
+    if vllm_runtimes or (p.get("vllm") or {}).get("enabled") is True:
+        providers.append("vllm")
+    litellm = (profile.get("gateways", {}).get("litellm") or {}).get("enabled", "auto")
+    open_webui = profile.get("frontends", {}).get("open_webui", {}) or {}
     return {
         "name": profile["name"],
-        "public_name": profile["public_name"],
-        "kind": profile["kind"],
-        "base_model": profile.get("base_model", ""),
-        "logical_model_name": profile.get("logical_model_name", ""),
-        "served_model_name": profile.get("served_model_name", ""),
-        "protocol_mode": profile.get("protocol_mode", "chat"),
-        "engine": profile.get("engine", "VLLM"),
-        "resource_profile": profile.get("resource_profile", ""),
+        "public_name": profile.get("name", ""),
+        "kind": profile.get("kind", "stack"),
+        "providers": providers,
+        "gateway": "litellm" if litellm is True else ("auto" if litellm == "auto" else "none"),
+        "frontend": "open_webui" if open_webui.get("enabled", "auto") not in (False, "false") else "none",
+        "frontend_provider": open_webui.get("provider", "auto"),
+        "route_count": len(profile.get("routes", {}) or {}),
         "description": profile.get("description", ""),
+        # Old fields kept so older list formatting doesn't crash.
+        "base_model": "",
+        "logical_model_name": "",
+        "served_model_name": "",
+        "protocol_mode": "stack",
+        "engine": ",".join(providers) or "none",
+        "resource_profile": "",
         "tags": profile.get("tags", []),
     }

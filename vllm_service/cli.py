@@ -227,6 +227,7 @@ def _configured_state_paths(state_root: str) -> dict[str, str]:
         "open_webui": str(base / "open-webui"),
         "postgres_open_webui": str(base / "postgres-open-webui"),
         "postgres_litellm": str(base / "postgres-litellm"),
+        "ollama": str(base / "ollama"),
         "runtime": str(base / "runtime"),
     }
 
@@ -477,8 +478,9 @@ def render_is_stale(cfg: dict[str, Any] | None = None) -> bool:
             current_plan,
             generated_dir(cfg) / "docker-compose.yml",
             runtime_env_path(cfg),
-            runtime_litellm_config_path(cfg),
         ]
+        # litellm_config.yaml is optional now; direct Ollama/raw-server profiles
+        # intentionally do not render it.
 
     if any(not p.exists() for p in required_outputs):
         return True
@@ -570,6 +572,9 @@ def _compose_up_with_router_recreate(
     # in detached mode (foreground `up` keeps the user attached to logs and
     # leaves cycling decisions to compose).
     if not detach:
+        return
+
+    if not runtime_litellm_config_path(cfg).exists():
         return
 
     try:
@@ -1159,9 +1164,11 @@ class ListProfilesCLI(_PathOverridesMixin):
             if profile.get("kind") == "invalid-profile":
                 continue
             summary = profile_summary(profile)
+            providers = ",".join(summary.get("providers", [])) or "none"
             print(
-                f"{name}: public={summary['public_name']} logical={summary['logical_model_name']} "
-                f"protocol={summary['protocol_mode']} base_model={summary['base_model']}"
+                f"{name}: providers={providers} gateway={summary['gateway']} "
+                f"frontend={summary['frontend']} frontend_provider={summary['frontend_provider']} "
+                f"routes={summary['route_count']}"
             )
         return 0
 
@@ -1415,7 +1422,7 @@ class PurgeCLI(
         cfg = config_for_runtime(config, allow_missing=True)
 
         state = normalized_state(cfg.get("state", {}))
-        always_delete = ["postgres_litellm", "postgres_open_webui", "open_webui", "runtime"]
+        always_delete = ["postgres_litellm", "postgres_open_webui", "open_webui", "ollama", "runtime"]
         model_dirs = ["hf_cache", "vllm_cache"]
         keys = always_delete + model_dirs if config.delete_cache else always_delete
         dirs_to_delete = [Path(state[k]) for k in keys if Path(state[k]).exists()]

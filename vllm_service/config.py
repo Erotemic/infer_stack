@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from .catalog import normalize_model_catalog, normalize_profile_catalog
+from .catalog import normalize_ollama_models, normalize_stack_profiles, normalize_vllm_models
 from .hardware import detect_inventory
 from .paths import config_root, data_root
 
@@ -29,12 +29,14 @@ PINNED_IMAGES = {
     "open_webui": "ghcr.io/open-webui/open-webui:v0.8.6",
     "litellm": "ghcr.io/berriai/litellm:v1.82.3-stable",
     "vllm": "vllm/vllm-openai:v0.19.1",
+    "ollama": "ollama/ollama:latest",
 }
 
 DEFAULT_PORTS = {
     "litellm": 14042,
     "open_webui": 13000,
     "postgres": 15432,
+    "ollama": 11434,
 }
 
 
@@ -51,6 +53,7 @@ def default_state_paths() -> dict[str, str]:
         "open_webui": str(storage_root / "open-webui"),
         "postgres_open_webui": str(storage_root / "postgres-open-webui"),
         "postgres_litellm": str(storage_root / "postgres-litellm"),
+        "ollama": str(storage_root / "ollama"),
         "runtime": str(storage_root / "runtime"),
     }
 
@@ -213,12 +216,21 @@ def _load_template_yaml(name: str) -> dict[str, Any]:
     return yaml.safe_load(text) or {}
 
 
-def builtin_models_catalog() -> dict[str, Any]:
-    return _load_template_yaml("default-models.yaml")
+def builtin_vllm_models_catalog() -> dict[str, Any]:
+    return _load_template_yaml("default-vllm-models.yaml")
+
+
+def builtin_ollama_models_catalog() -> dict[str, Any]:
+    return _load_template_yaml("default-ollama-models.yaml")
 
 
 def builtin_profiles_catalog() -> dict[str, Any]:
     return _load_template_yaml("default-profiles.yaml")
+
+
+# Backwards-compatible helper name for callers that only know about vLLM models.
+def builtin_models_catalog() -> dict[str, Any]:
+    return builtin_vllm_models_catalog()
 
 
 def deep_merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
@@ -232,26 +244,40 @@ def deep_merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
 
 
 def merged_catalogs(config: dict[str, Any]) -> dict[str, Any]:
-    built_models = builtin_models_catalog() if config.get("catalog", {}).get("builtin_models", True) else {}
-    built_profiles = builtin_profiles_catalog() if config.get("catalog", {}).get("builtin_profiles", True) else {}
-    raw_user_models = config.get("catalog", {}).get("user_models_file", str(MODELS_FILE))
+    catalog_cfg = config.get("catalog", {})
+    built_vllm = builtin_vllm_models_catalog() if catalog_cfg.get("builtin_models", True) else {}
+    built_ollama = builtin_ollama_models_catalog() if catalog_cfg.get("builtin_models", True) else {}
+    built_profiles = builtin_profiles_catalog() if catalog_cfg.get("builtin_profiles", True) else {}
+    raw_user_models = catalog_cfg.get("user_models_file", str(MODELS_FILE))
     user_models_path = Path(raw_user_models)
     if not user_models_path.is_absolute():
         user_models_path = config_root() / user_models_path
     user = load_yaml(user_models_path) if user_models_path.exists() else {}
+
+    # User files may use the new provider-specific keys or the old generic
+    # `models` key, which is interpreted as vLLM models.
+    vllm_models = deep_merge(built_vllm.get("vllm_models", built_vllm.get("models", {})), user.get("vllm_models", user.get("models", {})))
+    ollama_models = deep_merge(built_ollama.get("ollama_models", {}), user.get("ollama_models", {}))
+    profiles = deep_merge(built_profiles.get("profiles", {}), user.get("profiles", {}))
+    profiles = deep_merge(profiles, config.get("profiles", {}))
     return {
-        "models": deep_merge(built_models.get("models", {}), user.get("models", {})),
-        "profiles": deep_merge(built_profiles.get("profiles", {}), user.get("profiles", {})),
+        "vllm_models": vllm_models,
+        "ollama_models": ollama_models,
+        "profiles": profiles,
+        # Compatibility view.
+        "models": vllm_models,
     }
 
 
 def normalized_catalogs(config: dict[str, Any]) -> dict[str, Any]:
     catalogs = merged_catalogs(config)
-    models = normalize_model_catalog(catalogs.get("models", {}))
-    raw_profiles = {**catalogs.get("profiles", {}), **deepcopy(config.get("profiles", {}))}
-    profiles = normalize_profile_catalog(raw_profiles, models)
+    vllm_models = normalize_vllm_models(catalogs.get("vllm_models", {}))
+    ollama_models = normalize_ollama_models(catalogs.get("ollama_models", {}))
+    profiles = normalize_stack_profiles(catalogs.get("profiles", {}), vllm_models, ollama_models)
     return {
-        "models": models,
+        "vllm_models": vllm_models,
+        "ollama_models": ollama_models,
+        "models": vllm_models,
         "profiles": profiles,
     }
 
@@ -280,11 +306,31 @@ def initial_config() -> dict[str, Any]:
             "compose_cmd": "docker compose",
             "target_inventory": "auto",
         },
+        "providers": {
+            "ollama": {"enabled": "auto"},
+            "vllm": {"enabled": "auto"},
+        },
+        "gateways": {
+            "litellm": {"enabled": "auto"},
+        },
+        "frontends": {
+            "open_webui": {"enabled": "auto"},
+        },
+        "ollama": {
+            "publish_port": False,
+            "host": "0.0.0.0:11434",
+            "keep_alive": "2m",
+            "context_length": 4096,
+            "num_parallel": 1,
+            "max_loaded_models": 1,
+            "max_queue": 8,
+            "gpu_indices": "auto",
+        },
         "ports": deepcopy(DEFAULT_PORTS),
         "images": deepcopy(PINNED_IMAGES),
         "state": default_state_paths(),
         "output": default_output_config(),
-        "open_webui": {"auth": False},
+        "open_webui": {"auth": False, "provider": "auto"},
         "cluster": default_cluster_config(),
         "resource_profiles": default_resource_profiles(),
         "profiles": {},

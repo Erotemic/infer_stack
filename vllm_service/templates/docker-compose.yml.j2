@@ -1,4 +1,5 @@
 services:
+{% if lock.deployment.frontends.open_webui.enabled %}
   postgres-open-webui:
     image: {{ lock.deployment.images.postgres }}
     container_name: postgres-open-webui
@@ -15,6 +16,8 @@ services:
       timeout: 5s
       retries: 10
 
+{% endif %}
+{% if lock.deployment.gateways.litellm.enabled %}
   postgres-litellm:
     image: {{ lock.deployment.images.postgres }}
     container_name: postgres-litellm
@@ -31,10 +34,48 @@ services:
       timeout: 5s
       retries: 10
 
-{% for svc in lock.deployment.services %}
-  vllm-{{ svc.service_name }}:
+{% endif %}
+{% if lock.deployment.providers.ollama.enabled %}
+  ollama:
+    image: {{ lock.deployment.images.ollama }}
+    container_name: ollama
+    restart: unless-stopped
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      CUDA_VISIBLE_DEVICES: "{{ lock.deployment.providers.ollama.gpu_indices | join(',') }}"
+      OLLAMA_HOST: "{{ lock.deployment.providers.ollama.host }}"
+      OLLAMA_KEEP_ALIVE: "{{ lock.deployment.providers.ollama.keep_alive }}"
+      OLLAMA_CONTEXT_LENGTH: "{{ lock.deployment.providers.ollama.context_length }}"
+      OLLAMA_NUM_PARALLEL: "{{ lock.deployment.providers.ollama.num_parallel }}"
+      OLLAMA_MAX_LOADED_MODELS: "{{ lock.deployment.providers.ollama.max_loaded_models }}"
+      OLLAMA_MAX_QUEUE: "{{ lock.deployment.providers.ollama.max_queue }}"
+    volumes:
+      - {{ lock.deployment.state.ollama }}:/root/.ollama
+{% if lock.deployment.providers.ollama.publish_port %}
+    ports:
+      - "127.0.0.1:{{ lock.deployment.ports.ollama }}:11434"
+{% endif %}
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+{% if lock.deployment.providers.ollama.gpu_indices %}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [{% for idx in lock.deployment.providers.ollama.gpu_indices %}"{{ idx }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+              capabilities: [gpu]
+{% endif %}
+
+{% endif %}
+{% for name, svc in lock.deployment.providers.vllm.runtimes.items() %}
+  {{ svc.compose_service_name }}:
     image: {{ lock.deployment.images.vllm }}
-    container_name: vllm-{{ svc.service_name }}
+    container_name: {{ svc.service_name }}
     restart: unless-stopped
     ipc: host
     labels:
@@ -92,7 +133,7 @@ services:
       - {{ lock.deployment.state.hf_cache }}:/root/.cache/huggingface
       - {{ lock.deployment.state.vllm_cache }}:/root/.cache/vllm
     ports:
-      - "127.0.0.1:{{ 18000 + loop.index0 }}:8000"
+      - "127.0.0.1:{{ svc.host_port or (18000 + loop.index0) }}:8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -108,6 +149,7 @@ services:
               capabilities: [gpu]
 
 {% endfor %}
+{% if lock.deployment.gateways.litellm.enabled %}
   litellm:
     image: {{ lock.deployment.images.litellm }}
     container_name: litellm
@@ -115,8 +157,12 @@ services:
     depends_on:
       postgres-litellm:
         condition: service_healthy
-{% for svc in lock.deployment.services %}
-      vllm-{{ svc.service_name }}:
+{% if lock.deployment.providers.ollama.enabled %}
+      ollama:
+        condition: service_healthy
+{% endif %}
+{% for name, svc in lock.deployment.providers.vllm.runtimes.items() %}
+      {{ svc.compose_service_name }}:
         condition: service_healthy
 {% endfor %}
     environment:
@@ -135,27 +181,30 @@ services:
     ports:
       - "{{ lock.deployment.ports.litellm }}:4000"
 
+{% endif %}
+{% if lock.deployment.frontends.open_webui.enabled %}
   open-webui:
     image: {{ lock.deployment.images.open_webui }}
     container_name: open-webui
     restart: unless-stopped
-    # No depends_on for litellm — Open WebUI has built-in retry logic for
-    # unreachable model providers, so it can start (and stay running) without
-    # litellm being available. Removing the dependency also stops Compose
-    # from cascading recreations along the chat-services chain: when only a
-    # vllm-* service config changes during `vllm-stack switch`, only that
-    # service is recreated and the Open WebUI session is preserved.
     depends_on:
       postgres-open-webui:
         condition: service_healthy
     environment:
-      WEBUI_AUTH: "{{ 'True' if lock.deployment.open_webui.auth else 'False' }}"
+      WEBUI_AUTH: "{{ 'True' if lock.deployment.frontends.open_webui.auth else 'False' }}"
       ENABLE_PERSISTENT_CONFIG: "False"
       DATABASE_URL: postgresql://${OPENWEBUI_POSTGRES_USER}:${OPENWEBUI_POSTGRES_PASSWORD}@postgres-open-webui:5432/${OPENWEBUI_POSTGRES_DB}
+{% if lock.deployment.frontends.open_webui.provider == 'ollama' %}
+      ENABLE_OLLAMA_API: "True"
+      OLLAMA_BASE_URL: http://ollama:11434
+{% elif lock.deployment.frontends.open_webui.provider == 'litellm' %}
+      ENABLE_OLLAMA_API: "False"
       OPENAI_API_BASE_URL: http://litellm:4000/v1
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+{% endif %}
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
     volumes:
       - {{ lock.deployment.state.open_webui }}:/app/backend/data
     ports:
       - "{{ lock.deployment.ports.open_webui }}:8080"
+{% endif %}
