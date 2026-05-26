@@ -23,3 +23,9 @@ ollama_models:
     defaults:
       num_ctx: 4096
       temperature: 0.2
+  smollm2-135m:
+    tag: smollm2:135m
+    served_model_name: smollm2-135m
+    defaults:
+      num_ctx: 4096
+      temperature: 0.2

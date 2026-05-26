@@ -5,6 +5,9 @@ from typing import Any
 
 from .catalog import canonical_profile_name, normalize_ollama_models, normalize_stack_profiles, normalize_vllm_models, sanitize_name
 from .config import (
+    DEFAULT_PORTS,
+    PINNED_IMAGES,
+    deep_merge,
     load_kubeai_resource_profiles,
     merged_catalogs,
     normalized_cluster,
@@ -411,8 +414,8 @@ def resolve(config: dict[str, Any], inventory: dict[str, Any] | None = None, pro
 
     backend = str(config.get("backend", "compose")).lower()
     merged_policy = _merge(config.get("policy", {}), profile.get("policy", {}))
-    images = deepcopy(config.get("images", {}))
-    ports = deepcopy(config.get("ports", {}))
+    images = deep_merge(PINNED_IMAGES, config.get("images", {}) or {})
+    ports = deep_merge(DEFAULT_PORTS, config.get("ports", {}) or {})
     state = normalized_state(config.get("state", {}))
     output = normalized_output(config.get("output", {}))
 

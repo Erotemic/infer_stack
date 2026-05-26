@@ -190,3 +190,12 @@ rm -rf /tmp/vllm-stack-demo
 - The hardware-shape integration profiles are named ``test-*``: pick
   ``test-single-11gb`` for a workstation card or ``test-multi-gpu``
   with ``--allowed-gpus 1,3`` to exercise tensor-parallel rendering.
+
+
+## Readiness vs Docker health
+
+Use `vllm-stack wait-ready` when a test must wait until the active model can
+actually serve a request. Compose health can become true before a routed vLLM
+model is ready through LiteLLM. `vllm-stack smoke-test` runs this readiness
+probe by default; pass `--no-wait` only when you intentionally want to test the
+currently listening endpoint without waiting for model readiness.

@@ -43,8 +43,7 @@ vllm-stack setup --backend compose --profile ollama-direct
 vllm-stack render --yes --simulate-hardware 2x11
 vllm-stack up -d
 
-docker compose -f generated/docker-compose.yml --env-file generated/.env exec ollama \
-  ollama pull qwen3.5:4b
+vllm-stack ollama-pull qwen3.5:4b
 ```
 
 Rendered shape:

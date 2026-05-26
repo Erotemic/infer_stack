@@ -159,7 +159,7 @@ HF_TOKEN=your_token_here
 From the repo root:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env up -d
+vllm-stack up -d
 ```
 
 ---
@@ -169,7 +169,7 @@ docker compose -f generated/docker-compose.yml --env-file generated/.env up -d
 Check that the model is exposed:
 
 ```bash
-curl http://127.0.0.1:18000/v1/models   -H "Authorization: Bearer $(grep '^VLLM_BACKEND_API_KEY=' generated/.env | cut -d= -f2-)"
+vllm-stack smoke-test
 ```
 
 You should see:

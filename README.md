@@ -27,7 +27,7 @@ vllm-stack validate
 vllm-stack render
 vllm-stack up -d
 vllm-stack deploy
-vllm-stack switch <profile> --apply
+vllm-stack switch <profile> --apply  # re-render and converge; no separate up needed
 vllm-stack status
 vllm-stack smoke-test
 ```
@@ -65,9 +65,18 @@ vllm-stack start                           # start back up
 vllm-stack pull                            # refresh images
 ```
 
-For interactive shells / one-shot commands inside a container, run
-`docker compose -f <generated>/docker-compose.yml --env-file <generated>/.env
-exec <service> <cmd>` directly.
+For Ollama model management inside the rendered Ollama service, prefer the
+CLI wrappers:
+
+```bash
+vllm-stack ollama-pull smollm2:135m
+vllm-stack ollama-list
+vllm-stack ollama-ps
+```
+
+For other interactive one-shot commands inside a container, use
+`vllm-stack logs`, `vllm-stack ps`, `vllm-stack restart`, or fall back to raw
+Compose only when no wrapper exists.
 
 On the KubeAI backend these wrappers raise ``NotImplementedError`` —
 use the equivalent ``kubectl`` commands in the meantime.
@@ -186,7 +195,7 @@ profiles.
 
 For a real running vLLM stack on a workstation, see
 [docs/demos/quickstart.md](docs/demos/quickstart.md). For direct Ollama on a dual GTX 1080 Ti style host, see
-[docs/demos/ollama_direct_quickstart.md](docs/demos/ollama_direct_quickstart.md).
+[docs/demos/ollama_direct_quickstart.md](docs/demos/ollama_direct_quickstart.md). For a focused GPU-1 backend switch test, see [docs/demos/smollm2_gpu1_backend_switch.md](docs/demos/smollm2_gpu1_backend_switch.md).
 
 User-supplied paths on the CLI (`--file`, `--from-file`,
 `--resource-profiles-file`, `--output-dir`) still resolve against the
@@ -218,10 +227,6 @@ vllm-stack up -d
 
 ### Test that it is responding
 
-```bash
-vllm-stack smoke-test
-```
-
 When LiteLLM is enabled, the default Compose front door is:
 
 ```text
@@ -237,41 +242,42 @@ http://127.0.0.1:11434/v1
 
 unless you changed the relevant ports in config.
 
-List LiteLLM models when LiteLLM is enabled:
+Wait until the active profile can serve a real request through its resolved default endpoint:
 
 ```bash
-source generated/.env
-curl http://127.0.0.1:14042/v1/models \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+vllm-stack wait-ready
 ```
 
-Send a request through LiteLLM:
+`wait-ready` is stronger than Docker Compose health: it probes the user-facing
+LiteLLM, Ollama, or direct vLLM access surface and, by default, requires a tiny
+generation/completion to succeed. The smoke test runs this readiness probe by
+default before issuing its normal test request:
 
 ```bash
-source generated/.env
-curl http://127.0.0.1:14042/v1/chat/completions \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen/qwen2.5-7b-instruct-turbo",
-    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
-    "max_tokens": 64
-  }'
+vllm-stack smoke-test
 ```
 
-Pull and test a direct Ollama model:
+For direct Ollama profiles, pull a model first and then smoke-test that model:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env exec ollama \
-  ollama pull qwen3.5:4b
+vllm-stack ollama-pull qwen3.5:4b
+vllm-stack ollama-list
+vllm-stack smoke-test --model qwen3.5:4b
+```
 
-curl http://127.0.0.1:11434/api/chat \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3.5:4b",
-    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
-    "stream": false
-  }'
+For LiteLLM profiles, `smoke-test` reads the rendered `.env` automatically and
+uses the active profile's resolved OpenAI-compatible front door. You can inspect
+individual secrets when needed:
+
+```bash
+vllm-stack env LITELLM_MASTER_KEY
+vllm-stack env VLLM_BACKEND_API_KEY
+```
+
+When you intentionally want the old quick behavior, skip the readiness wait:
+
+```bash
+vllm-stack smoke-test --no-wait --model gpt2
 ```
 
 ### Stop it
@@ -319,14 +325,14 @@ container names. Use only the services rendered by the active profile:
 
 ```bash
 # LiteLLM gateway profile
-docker compose -f generated/docker-compose.yml --env-file generated/.env logs -f litellm
+vllm-stack logs -f litellm
 
 # Direct Ollama profile
-docker compose -f generated/docker-compose.yml --env-file generated/.env logs -f ollama
+vllm-stack logs -f ollama
 
-# Open WebUI database, when Open WebUI is enabled
-docker compose -f generated/docker-compose.yml --env-file generated/.env exec postgres-open-webui \
-  psql -U "$OPENWEBUI_POSTGRES_USER" "$OPENWEBUI_POSTGRES_DB"
+# Ollama model store helpers
+vllm-stack ollama-list
+vllm-stack ollama-ps
 ```
 
 You do not need to delete any volume during normal operation. If you
@@ -348,12 +354,27 @@ of existing lines are preserved where practical.
 vllm-stack switch <profile> --apply
 ```
 
-`switch --apply` re-renders from the updated `config.yaml`, brings the
-stack up convergently with `--remove-orphans` so components/runtimes that
-are no longer in the rendered compose file are dropped. When LiteLLM is enabled
-and its router config changes, `switch --apply` force-recreates `litellm` and
-`open-webui` in place so they pick up the new alias list. Postgres volumes and
-provider caches are left untouched.
+`switch --apply` re-renders from the updated `config.yaml`, then brings the
+stack up convergently with `--remove-orphans` so a separate `vllm-stack up` is
+not needed. Components/runtimes that are no longer in the rendered compose file
+are dropped. Compose preserves existing containers whose service definitions did
+not change. For vLLM-to-vLLM profile switches, unchanged Open WebUI stays up;
+LiteLLM is refreshed through its admin API when possible. The live refresh
+path treats LiteLLM's "model not found in db" response for config-backed
+models as non-fatal, so switching aliases can add the new route without
+tearing LiteLLM down. That can temporarily leave stale config-backed aliases
+in `/v1/models`; restart LiteLLM manually only when you want to clean those
+up. If Compose already created or recreated LiteLLM while converging the new
+stack, no extra router refresh is attempted because the new container has
+already loaded the freshly rendered YAML. Profiles that do not render
+LiteLLM, such as direct Ollama profiles, skip the router refresh path even if
+an old `runtime/litellm_config.yaml` file remains from a previous profile.
+Switches that change Open WebUI's provider wiring, such as
+`Open WebUI -> LiteLLM` to `Open WebUI -> Ollama`, necessarily recreate
+Open WebUI because its environment changes. Postgres volumes and provider
+caches are left untouched. vLLM runtime containers are named after their
+Compose service, for example `vllm-chat`, so `docker ps` and
+`vllm-stack logs vllm-chat` clearly identify them as vLLM containers.
 
 ### Protocol modes for base vs. instruct models
 
@@ -408,8 +429,7 @@ effect after a `litellm`-only restart:
 
 ```bash
 vllm-stack render
-docker compose -f generated/docker-compose.yml --env-file generated/.env \
-  up -d --no-deps --force-recreate litellm
+vllm-stack restart litellm
 ```
 
 The built-in `pythia-inspect-mmlu-compat` profile is a ready-made
@@ -443,8 +463,13 @@ on chat-mode entries so Open WebUI can display reasoning in the
 streamed response. To test reasoning end-to-end:
 
 ```bash
-# Direct LiteLLM curl (streaming):
-source generated/.env
+# Non-streaming CLI smoke test:
+vllm-stack smoke-test \
+  --model qwen3.6-35b-a3b \
+  --prompt "Think step by step: 17*23"
+
+# For streaming inspection, read the key with the CLI wrapper:
+LITELLM_MASTER_KEY=$(vllm-stack env LITELLM_MASTER_KEY)
 curl -N http://127.0.0.1:14042/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \
@@ -855,3 +880,48 @@ A good workflow is:
 
 Compose is the better fit when you already know which profile you want. KubeAI has more first-request overhead because it may need to create pods, pull images, load the model, and warm up the backend.
 
+
+
+## vLLM startup caches
+
+Generated Compose mounts persist Hugging Face, vLLM, PyTorch/TorchInductor,
+Triton, and CUDA JIT caches. Warm starts avoid redownloading and redoing many
+compile/JIT steps, but a vLLM model swap still creates a new engine process and
+must reload weights into GPU memory.
+
+### Diagnosing profile switches and readiness
+
+`docker compose` health only means that a container-level healthcheck passed.  It
+is not the same thing as "the routed model can answer a request through the
+active access surface."  This matters most when switching between two vLLM
+profiles that reuse the same runtime service name: the old vLLM process exits,
+Docker starts the replacement process, and LiteLLM may remain up while returning
+upstream connection errors until vLLM finishes loading the new model.
+
+Use the dedicated readiness and diagnostics commands after a switch:
+
+```bash
+vllm-stack switch gpt2-single --apply --yes
+vllm-stack wait-ready --model gpt2
+vllm-stack smoke-test --model gpt2
+```
+
+For debugging, use:
+
+```bash
+vllm-stack diagnose --model gpt2 --generation
+vllm-stack diagnose --logs --tail 80
+```
+
+`diagnose` prints the resolved provider/gateway/frontend graph, rendered Compose
+service state, LiteLLM route probes, direct provider probes, and optional recent
+logs.  It is intended to distinguish an actual LiteLLM outage from the more
+common case where LiteLLM is running but its upstream vLLM runtime is still
+booting.
+
+The Compose service-state diagnostics include Docker's exit code, OOM-killed
+flag, restart count, and actual container name.  This is important because
+`litellm exited with code 137` usually means Docker sent SIGKILL, commonly from
+an OOM kill or a forced container replacement, whereas LiteLLM returning HTTP
+500 with `Cannot connect to host vllm-*` means LiteLLM is still running but the
+upstream vLLM runtime is not ready yet.

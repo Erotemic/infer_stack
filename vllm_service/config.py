@@ -50,6 +50,9 @@ def default_state_paths() -> dict[str, str]:
     return {
         "hf_cache": str(storage_root / "hf-cache"),
         "vllm_cache": str(storage_root / "vllm-cache"),
+        "torch_cache": str(storage_root / "torch-cache"),
+        "triton_cache": str(storage_root / "triton-cache"),
+        "cuda_cache": str(storage_root / "cuda-cache"),
         "open_webui": str(storage_root / "open-webui"),
         "postgres_open_webui": str(storage_root / "postgres-open-webui"),
         "postgres_litellm": str(storage_root / "postgres-litellm"),

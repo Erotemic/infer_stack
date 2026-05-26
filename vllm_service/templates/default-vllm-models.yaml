@@ -186,6 +186,33 @@ vllm_models:
       enable_prefix_caching: false
       max_num_batched_tokens: 8192
       max_num_seqs: 8
+  qwen3.6-35b-a3b-fp8:
+    hf_model_id: Qwen/Qwen3.6-35B-A3B-FP8
+    served_model_name: qwen3.6-35b-a3b
+    tokenizer_name: Qwen/Qwen3.6-35B-A3B
+    family: qwen3.6
+    modalities:
+    - text
+    memory_class_gib: 40
+    min_vram_gib_per_replica: 24
+    preferred_gpu_count: 1
+    context_window: 262144
+    supported_protocols:
+    - chat
+    - completions
+    reasoning:
+      enabled: true
+      parser: qwen3
+      expose_to_openwebui: true
+    defaults:
+      max_model_len: 8192
+      gpu_memory_utilization: 0.92
+      enable_prefix_caching: false
+      max_num_batched_tokens: 2048
+      max_num_seqs: 2
+    tool_calling:
+      auto: true
+      parser: qwen3_coder
   gemma4-e2b:
     hf_model_id: google/gemma-4-E2B-it
     served_model_name: gemma4-e2b

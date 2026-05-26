@@ -63,15 +63,14 @@ fields) without disturbing any of the running vLLM containers:
 ```bash
 python manage.py render
 
-docker compose -f generated/docker-compose.yml --env-file generated/.env \
-  up -d --no-deps --force-recreate litellm
+vllm-stack restart litellm
 ```
 
 `--no-deps` keeps `vllm-qwen36-35b`, `vllm-pythia-69b`, and
 `vllm-pythia-28b` running. Confirm with:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env ps
+vllm-stack ps
 ```
 
 Avoid `docker compose down`, `down -v`, or a profile-wide
@@ -85,8 +84,7 @@ active use — re-render and recreate only the Qwen vLLM service:
 
 ```bash
 python manage.py render
-docker compose -f generated/docker-compose.yml --env-file generated/.env \
-  up -d --no-deps --force-recreate vllm-qwen36-35b
+vllm-stack restart vllm-qwen36-35b
 ```
 
 `--no-deps` prevents Compose from touching `postgres-litellm`,
@@ -94,7 +92,7 @@ docker compose -f generated/docker-compose.yml --env-file generated/.env \
 services. To confirm the rendered service name first:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env ps
+vllm-stack ps
 ```
 
 Avoid `docker compose down`, `down -v`, or a profile-wide
@@ -142,7 +140,7 @@ Edit `generated/.env` and set `HF_TOKEN=...`. Unknown `.env` keys
 ## 3. Verify the routes
 
 ```bash
-source generated/.env
+eval "$(vllm-stack env --export)"
 curl -s http://127.0.0.1:14042/v1/models \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" | jq '.data[].id'
 ```

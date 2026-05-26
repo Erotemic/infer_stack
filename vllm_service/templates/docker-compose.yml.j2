@@ -75,7 +75,7 @@ services:
 {% for name, svc in lock.deployment.providers.vllm.runtimes.items() %}
   {{ svc.compose_service_name }}:
     image: {{ lock.deployment.images.vllm }}
-    container_name: {{ svc.service_name }}
+    container_name: {{ svc.container_name or svc.compose_service_name }}
     restart: unless-stopped
     ipc: host
     labels:
@@ -87,7 +87,14 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       HF_TOKEN: ${HF_TOKEN}
       VLLM_API_KEY: ${VLLM_BACKEND_API_KEY}
+      HF_HOME: /root/.cache/huggingface
+      HF_HUB_CACHE: /root/.cache/huggingface/hub
+      HUGGINGFACE_HUB_CACHE: /root/.cache/huggingface/hub
       VLLM_CACHE_ROOT: /root/.cache/vllm
+      TORCH_HOME: /root/.cache/torch
+      TORCHINDUCTOR_CACHE_DIR: /root/.cache/torch/inductor
+      TRITON_CACHE_DIR: /root/.cache/triton
+      CUDA_CACHE_PATH: /root/.cache/nvidia/ComputeCache
 {% if lock.deployment.vllm.enable_responses_api_store %}
       VLLM_ENABLE_RESPONSES_API_STORE: "1"
 {% endif %}
@@ -132,6 +139,9 @@ services:
     volumes:
       - {{ lock.deployment.state.hf_cache }}:/root/.cache/huggingface
       - {{ lock.deployment.state.vllm_cache }}:/root/.cache/vllm
+      - {{ lock.deployment.state.torch_cache }}:/root/.cache/torch
+      - {{ lock.deployment.state.triton_cache }}:/root/.cache/triton
+      - {{ lock.deployment.state.cuda_cache }}:/root/.cache/nvidia/ComputeCache
     ports:
       - "127.0.0.1:{{ svc.host_port or (18000 + loop.index0) }}:8000"
     healthcheck:
@@ -157,14 +167,11 @@ services:
     depends_on:
       postgres-litellm:
         condition: service_healthy
-{% if lock.deployment.providers.ollama.enabled %}
-      ollama:
-        condition: service_healthy
-{% endif %}
-{% for name, svc in lock.deployment.providers.vllm.runtimes.items() %}
-      {{ svc.compose_service_name }}:
-        condition: service_healthy
-{% endfor %}
+    # Do not depend directly on provider health here. LiteLLM can load its
+    # route table before upstream providers are healthy, and avoiding provider
+    # dependency edges prevents Compose from restarting LiteLLM on every vLLM
+    # model swap. Smoke tests and clients should retry until the selected
+    # upstream model is healthy.
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       VLLM_BACKEND_API_KEY: ${VLLM_BACKEND_API_KEY}

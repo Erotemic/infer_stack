@@ -72,40 +72,22 @@ Open WebUI is available at <http://127.0.0.1:13000>. Ollama is published on
 Start with a small model before trying larger ones:
 
 ```bash
-docker compose -f /data/service/docker/vllm-stack/generated/docker-compose.yml \
-  --env-file /data/service/docker/vllm-stack/generated/.env \
-  exec ollama ollama pull qwen3.5:4b
+vllm-stack ollama-pull qwen3.5:4b
 ```
 
 Other good initial candidates for 11 GiB cards:
 
 ```bash
-ollama pull qwen3.5:2b
-ollama pull qwen3.5:9b-q4_K_M
-ollama pull gemma4:e2b
+vllm-stack ollama-pull qwen3.5:2b
+vllm-stack ollama-pull qwen3.5:9b-q4_K_M
+vllm-stack ollama-pull gemma4:e2b
 ```
 
-Run a direct API check:
+Run a direct API check through the CLI smoke test. It uses Ollama's native API
+for direct-Ollama profiles and reads rendered runtime settings automatically:
 
 ```bash
-curl -s http://127.0.0.1:11434/api/chat \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3.5:4b",
-    "messages": [{"role": "user", "content": "Say hello from Ollama."}],
-    "stream": false
-  }' | python3 -m json.tool
-```
-
-Or use Ollama's OpenAI-compatible endpoint:
-
-```bash
-curl -s http://127.0.0.1:11434/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3.5:4b",
-    "messages": [{"role": "user", "content": "Say hello in one sentence."}]
-  }' | python3 -m json.tool
+vllm-stack smoke-test --model qwen3.5:4b
 ```
 
 ## 4. Day-to-day operations
@@ -120,13 +102,8 @@ vllm-stack up -d
 Inspect loaded models and where they live:
 
 ```bash
-docker compose -f /data/service/docker/vllm-stack/generated/docker-compose.yml \
-  --env-file /data/service/docker/vllm-stack/generated/.env \
-  exec ollama ollama list
-
-docker compose -f /data/service/docker/vllm-stack/generated/docker-compose.yml \
-  --env-file /data/service/docker/vllm-stack/generated/.env \
-  exec ollama ollama ps
+vllm-stack ollama-list
+vllm-stack ollama-ps
 ```
 
 ## 5. When to add LiteLLM

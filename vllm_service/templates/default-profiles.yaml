@@ -1540,3 +1540,130 @@ profiles:
     router:
       aliases:
         lmsys/vicuna-7b-v1.3: helm-main
+  qwen3.5-9b-vllm-gpu1-3090:
+    description: Qwen3.5 9B through vLLM on physical GPU 1, tuned for a 24 GB RTX
+      3090 with a shorter context than the catalog default.
+    providers:
+      vllm:
+        runtimes:
+          chat:
+            model: qwen3.5-9b
+            served_model_name: qwen3.5-9b
+            logical_model_name: qwen3.5-9b
+            placement:
+              strategy: exact
+              gpu_indices:
+              - 1
+            runtime:
+              max_model_len: 8192
+              gpu_memory_utilization: 0.85
+              max_num_batched_tokens: 4096
+              max_num_seqs: 4
+              enable_prefix_caching: true
+      ollama:
+        enabled: false
+    gateways:
+      litellm:
+        enabled: true
+    frontends:
+      open_webui:
+        enabled: true
+        provider: litellm
+    routes:
+      qwen3.5-9b:
+        provider: vllm
+        runtime: chat
+  qwen3.6-35b-a3b-vllm-gpu1-3090:
+    description: Experimental Qwen3.6 35B-A3B FP8 through vLLM on physical GPU 1.
+      This is a best-effort 3090 profile with short context; official FP8 guidance
+      targets data-center GPUs, so this may fail on 24 GB / non-FP8 hardware.
+    providers:
+      vllm:
+        runtimes:
+          chat:
+            model: qwen3.6-35b-a3b-fp8
+            served_model_name: qwen3.6-35b-a3b
+            logical_model_name: qwen3.6-35b-a3b
+            placement:
+              strategy: exact
+              gpu_indices:
+              - 1
+            runtime:
+              max_model_len: 4096
+              gpu_memory_utilization: 0.92
+              max_num_batched_tokens: 2048
+              max_num_seqs: 1
+              enable_prefix_caching: false
+            extra_args:
+            - --language-model-only
+      ollama:
+        enabled: false
+    gateways:
+      litellm:
+        enabled: true
+    frontends:
+      open_webui:
+        enabled: true
+        provider: litellm
+    routes:
+      qwen3.6-35b-a3b:
+        provider: vllm
+        runtime: chat
+  smollm2-135m-vllm-gpu1:
+    description: SmolLM2 135M Instruct through vLLM on physical GPU 1, routed through
+      LiteLLM and Open WebUI.
+    providers:
+      vllm:
+        runtimes:
+          chat:
+            model: smollm2-135m-instruct
+            served_model_name: smollm2-135m
+            logical_model_name: smollm2-135m
+            placement:
+              strategy: exact
+              gpu_indices:
+              - 1
+            runtime:
+              max_model_len: 4096
+              gpu_memory_utilization: 0.5
+              max_num_batched_tokens: 2048
+              max_num_seqs: 16
+              enable_prefix_caching: true
+      ollama:
+        enabled: false
+    gateways:
+      litellm:
+        enabled: true
+    frontends:
+      open_webui:
+        enabled: true
+        provider: litellm
+    routes:
+      smollm2-135m:
+        provider: vllm
+        runtime: chat
+  smollm2-135m-ollama-gpu1:
+    description: Direct Ollama on physical GPU 1 with Open WebUI connected directly.
+      Pull smollm2:135m into Ollama before chat/smoke tests.
+    providers:
+      ollama:
+        enabled: true
+        gpu_indices:
+        - 1
+        publish_port: true
+        keep_alive: 2m
+        context_length: 4096
+        num_parallel: 1
+        max_loaded_models: 1
+        max_queue: 8
+      vllm:
+        enabled: false
+        runtimes: {}
+    gateways:
+      litellm:
+        enabled: false
+    frontends:
+      open_webui:
+        enabled: true
+        provider: ollama
+    routes: {}
