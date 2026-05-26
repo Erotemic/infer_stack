@@ -1,5 +1,9 @@
 # Single-node KubeAI example
 
+This example uses the stack-graph schema, but KubeAI currently renders only the
+`providers.vllm.runtimes` section. Ollama, LiteLLM, and Open WebUI are disabled
+in this example because they are Compose-only for now.
+
 Copy these files into the repo root:
 
 ```bash

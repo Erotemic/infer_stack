@@ -1,54 +1,61 @@
-# Quickstart — RTX 3090 workstation (GPU 1)
+# Quickstart — vLLM + LiteLLM on an RTX 3090 workstation
 
-Brings the vllm-stack up on a single-GPU workstation where GPU 0 is reserved
-for the desktop and GPU 1 is free for inference. We start with the tiniest
-possible model to prove the plumbing works, then switch up to progressively
-larger models without re-running setup.
+This guide brings up the traditional vLLM-backed stack on a single-GPU
+workstation where GPU 0 may be reserved for the desktop and GPU 1 is free for
+inference. It starts with the tiniest vLLM model to prove the plumbing works,
+then switches to progressively larger vLLM profiles.
 
-Ports: LiteLLM on **14042**, Open WebUI on **13000**
+For the simpler Pascal/1080 Ti path that runs **Open WebUI -> Ollama** with no
+LiteLLM and no predeclared model registry, use
+[`ollama_direct_quickstart.md`](ollama_direct_quickstart.md).
+
+Rendered shape for this guide:
+
+```text
+Open WebUI -> LiteLLM -> vLLM
+```
+
+Default ports for this profile family:
+
+- LiteLLM: <http://127.0.0.1:14042/v1>
+- Open WebUI: <http://127.0.0.1:13000>
 
 After setup, all state and generated artifacts live under
 `/data/service/docker/vllm-stack/`:
 
-```
+```text
 /data/service/docker/vllm-stack/
-  generated/            ← docker-compose.yml, .env, plan.yaml, litellm config
-  hf-cache/             ← downloaded model weights (survives stack restarts)
-  vllm-cache/           ← compiled torch graphs (survives stack restarts)
-  open-webui/           ← chat history
-  postgres-open-webui/  ← open-webui database
-  postgres-litellm/     ← litellm database
-  runtime/              ← runtime bind-mount configs
+  generated/            <- docker-compose.yml, .env, plan.yaml
+  hf-cache/             <- downloaded Hugging Face weights
+  vllm-cache/           <- compiled vLLM artifacts
+  open-webui/           <- Open WebUI state
+  postgres-open-webui/  <- Open WebUI database
+  postgres-litellm/     <- LiteLLM database, only when LiteLLM is enabled
+  runtime/              <- runtime bind-mount configs such as litellm_config.yaml
 
 ~/.config/vllm_service/
-  config.yaml           ← profile / backend / path settings
-  models.yaml           ← custom model overrides
+  config.yaml           <- active profile, backend, paths, ports
+  models.yaml           <- optional custom vllm_models, ollama_models, profiles
 ```
-
----
 
 ## Prerequisites
 
-- Docker with the NVIDIA container runtime (`nvidia-smi` visible inside containers)
-- `vllm-stack` installed in your Python environment
-- A Hugging Face token in your shell (only needed for gated models like Gemma):
+- Docker with the NVIDIA container runtime (`nvidia-smi` visible inside containers).
+- `vllm-stack` installed in your Python environment.
+- A Hugging Face token in your shell for gated models:
 
 ```bash
 export HF_TOKEN=hf_...
 ```
 
-The first profile in this guide (`gpt2-single`) is fully public and does **not**
-need `HF_TOKEN`.
+The first profile in this guide, `gpt2-single`, is public and does not need
+`HF_TOKEN`.
 
----
+## 1. First-time setup with GPT-2
 
-## 1. First-time setup with GPT-2 (smallest possible)
-
-Start with `gpt2-single` — GPT-2 124M, ~250 MB download, no auth, completions-only.
-The whole point is to validate the stack end-to-end before committing to a large
-download or a complex model.
-
-Create the data root and write `~/.config/vllm_service/config.yaml`:
+Start with `gpt2-single`: GPT-2 124M, ~250 MB download, no auth,
+completions-only. The goal is to validate Docker, GPU placement, LiteLLM, and
+Open WebUI before committing to a large model.
 
 ```bash
 mkdir -p /data/service/docker/vllm-stack
@@ -59,21 +66,21 @@ vllm-stack setup \
   --generated-dir /data/service/docker/vllm-stack/generated
 ```
 
-Render and bring it up:
+Render and start:
 
 ```bash
 vllm-stack render --yes
 vllm-stack up -d
 ```
 
-vLLM downloads GPT-2 (~250 MB) and compiles a torch graph (cached). Expect
-~30–60 seconds total on first start, a few seconds on warm restart.
+vLLM downloads GPT-2 and compiles a small graph. Expect roughly 30-60 seconds
+on first start and a few seconds on warm restart.
 
 Watch it come up:
 
 ```bash
-vllm-stack ps         # show container status
-vllm-stack logs -f    # tail all logs, Ctrl-C to stop tailing (containers stay up)
+vllm-stack ps
+vllm-stack logs -f
 ```
 
 Once all containers are healthy, smoke-test the API:
@@ -82,12 +89,7 @@ Once all containers are healthy, smoke-test the API:
 vllm-stack smoke-test
 ```
 
-This sends a single completion request to LiteLLM and prints the model response.
-On success you'll see a small JSON blob with `"finish_reason": "length"` or
-similar. (Open WebUI is up at <http://127.0.0.1:13000> but you'll probably want
-a chat-capable model — switch profiles below.)
-
-Manual API check, in case you want to see the bytes:
+Manual completion check:
 
 ```bash
 curl -s http://127.0.0.1:14042/v1/completions \
@@ -100,152 +102,124 @@ curl -s http://127.0.0.1:14042/v1/completions \
   }' | python3 -m json.tool
 ```
 
----
+Open WebUI is up at <http://127.0.0.1:13000>, but GPT-2 is a base model, so
+switch to a chat-capable profile before using it interactively.
 
-## 2. Switch to another tiny model (SmolLM2 135M, chat-capable)
-
-GPT-2 is base-model only — no chat template, no Open WebUI. Step up to
-**SmolLM2 135M Instruct** to get a real chat-completions endpoint at the
-smallest possible cost (~270 MB):
+## 2. Switch to SmolLM2 135M, chat-capable
 
 ```bash
 vllm-stack switch smollm2-135m-single --apply
 ```
 
-`switch` re-points the active profile in `config.yaml`, re-renders the compose
-file, and `--apply` cycles the stack to match (`down` → `up -d`). GPT-2 stays
-in `hf-cache/`, so flipping back to it later costs nothing.
+`switch --apply` updates `config.yaml`, re-renders the stack, removes orphaned
+vLLM containers, and refreshes LiteLLM/Open WebUI in place. Cached weights stay
+on disk.
 
-Smoke test again — this time chat-completions:
+Smoke test again:
 
 ```bash
 vllm-stack smoke-test
 ```
 
-Then open <http://127.0.0.1:13000> in a browser — Open WebUI now has a chat
-model wired up.
+Then open <http://127.0.0.1:13000>. Open WebUI now has a chat-capable route.
 
----
+## 3. Switch to a workstation-sized vLLM model
 
-## 3. Switch to Qwen3.5 9B (real workstation model)
-
-Once the plumbing is proven, switch to a properly-sized reasoning model. The
-canonical 3090 profile is `workstation-safe` (Qwen3.5 9B, GPU 0 not assumed
-to be free — uses `first_fit` placement, lands on the first usable GPU):
+After the plumbing is proven, switch to a real workstation profile. The
+`workstation-safe` profile uses first-fit placement so it avoids display GPUs
+when the policy reserves them:
 
 ```bash
 vllm-stack switch workstation-safe --apply
 ```
 
-First start downloads ~18 GB and warms the torch.compile cache; subsequent
-restarts are warm. The reasoning parser is engaged automatically (Qwen3.5 emits
-`<think>…</think>` blocks; vLLM strips them and exposes them in a separate
-`reasoning` field).
-
-Smoke test the larger model:
+First start downloads the model and warms the vLLM cache; subsequent restarts
+reuse `hf-cache/` and `vllm-cache/`.
 
 ```bash
 vllm-stack smoke-test
 ```
 
-If you'd rather pin to a specific GPU index (e.g. GPU 1 because GPU 0 drives a
-display), use the `gemma4-e4b-3090-workstation` profile instead, which bakes
-`gpu_indices: [1]` into the placement.
-
----
+If you want a profile that explicitly pins a runtime to a particular GPU, copy
+one of the built-in profile definitions into `~/.config/vllm_service/models.yaml`
+and change `providers.vllm.runtimes.<name>.placement.gpu_indices`.
 
 ## Day-to-day workflow
 
-**Stop** (preserves all data and cached weights):
+Stop without deleting state:
 
 ```bash
 vllm-stack down
 ```
 
-**Start after a reboot** (warm restart):
+Start after a reboot:
 
 ```bash
 vllm-stack up -d
 ```
 
-**Tail logs:**
+Tail logs and inspect status:
 
 ```bash
 vllm-stack logs
-```
-
-**Container status:**
-
-```bash
 vllm-stack ps
 ```
 
-**Run the smoke test** to verify the router and the backend are both healthy:
+Run the smoke test:
 
 ```bash
 vllm-stack smoke-test
 ```
 
-**Read a secret from .env** (e.g. for `curl`):
+Read the LiteLLM key from `.env`:
 
 ```bash
 vllm-stack env --key LITELLM_MASTER_KEY
 ```
 
----
-
 ## Troubleshooting
 
-### `Cannot start stack: required host ports are already bound`
+### Required host ports are already bound
 
-`vllm-stack up` does a pre-flight check on ports 14042 (litellm) and 13000
-(open-webui) before pulling images or waiting for vLLM to load, so this fails
-immediately rather than after a long startup.
+`vllm-stack up` does a pre-flight check on enabled component ports. For this
+profile family, the usual ports are 14042 for LiteLLM and 13000 for Open WebUI.
+Direct Ollama profiles may also publish 11434.
 
-Find what is holding the port:
+Find what is holding a port:
 
 ```bash
-ss -tlnp 'sport = :14042'                    # show socket + process (if visible)
-sudo lsof -nP -iTCP:14042 -sTCP:LISTEN       # works even when ss can't see the owner
-docker ps --filter publish=14042             # leftover container from another project
+ss -tlnp 'sport = :14042'
+sudo lsof -nP -iTCP:14042 -sTCP:LISTEN
+docker ps --filter publish=14042
 ```
 
-Common cases:
+Common fixes:
 
-- **Leftover container from a previous vllm-stack run** — `vllm-stack down`, or
-  `docker stop litellm && docker rm litellm` if the generated compose file is
-  gone.
-- **Another project's container** publishes the same port — stop it, or change
-  this stack's ports:
-  `vllm-stack setup --litellm-port 14001 --open-webui-port 13001` then
-  `vllm-stack render --yes` and `vllm-stack up -d`.
-- **A non-Docker service** is bound to the port — find the PID via the
-  commands above and stop it.
+- Stop the old stack with `vllm-stack down`.
+- Stop a stale container, for example `docker stop litellm && docker rm litellm`.
+- Change ports with setup flags such as
+  `vllm-stack setup --litellm-port 14001 --open-webui-port 13001`, then render
+  and start again.
 
 ### Smoke test errors
 
-`vllm-stack smoke-test` maps the common requests-library failures onto
-one-line remediation hints:
+- Could not connect: give the stack more time; check `vllm-stack ps`.
+- Connection closed before a response: the router is up but the upstream model
+  may still be loading; inspect `vllm-stack logs vllm-*`.
+- 401/403: the key in `.env` does not match the running LiteLLM container;
+  restart with `vllm-stack down && vllm-stack up -d`.
+- 503: vLLM is still loading; inspect `vllm-stack logs vllm-*`.
 
-- *Could not connect: nothing is listening yet* — give `vllm-stack up` a few
-  more seconds; `vllm-stack ps` to confirm litellm is running.
-- *Connection was closed before a response* — router is up but an upstream
-  isn't ready; `vllm-stack logs vllm-*` to watch model loading.
-- *401/403 from the API* — the key in `.env` doesn't match the running
-  container. If you re-rendered after the container started, restart with
-  `vllm-stack down && vllm-stack up -d`.
-- *503 from the API* — vLLM engine is still loading; `vllm-stack logs vllm-*`.
+### Wiping state
 
-### Wiping state to start fresh
-
-Delete postgres data, open-webui history, and runtime configs while keeping
-cached model weights (avoids a re-download):
+Delete databases, Open WebUI state, and runtime configs while keeping model
+caches:
 
 ```bash
 vllm-stack purge --yes
 ```
 
-Delete everything including the model cache (forces re-download on next start):
+Delete everything, including model caches:
 
 ```bash
 vllm-stack purge --yes --delete-cache

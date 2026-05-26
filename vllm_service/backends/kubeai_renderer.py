@@ -85,7 +85,7 @@ def render_kubeai_artifacts(lock_data: dict, *, assume_yes: bool = True) -> None
     values_doc = _resource_profile_values(lock_data)
     values_text = yaml.safe_dump(values_doc, sort_keys=False)
 
-    model_docs = [_model_doc(service) for service in deployment.get("services", [])]
+    model_docs = [_model_doc(service) for service in (deployment.get("providers", {}).get("vllm", {}).get("runtimes", {}) or {}).values()]
     model_text = "---\n".join(yaml.safe_dump(doc, sort_keys=False) for doc in model_docs)
 
     ingress = cluster.get("ingress", {}) or {}

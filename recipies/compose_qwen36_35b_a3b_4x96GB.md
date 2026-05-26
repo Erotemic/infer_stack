@@ -50,11 +50,11 @@ python manage.py setup --backend compose
 
 ## 3. Write the local model and profile definitions
 
-Overwrite `models.yaml` with:
+Write provider-specific model definitions and a stack profile in `models.yaml`:
 
 ```bash
 cat > models.yaml <<'EOF'
-models:
+vllm_models:
   qwen3.6-35b-a3b-local:
     hf_model_id: Qwen/Qwen3.6-35B-A3B
     tokenizer_name: Qwen/Qwen3.6-35B-A3B
@@ -74,53 +74,64 @@ models:
 
 profiles:
   qwen3.6-35b-a3b-dual-tp2-262k-local:
-    description: "Two Qwen3.6-35B-A3B tp=2 services across 4 GPUs at 262k context."
+    description: "Two Qwen3.6-35B-A3B vLLM runtimes across 4 GPUs at 262k context."
     vllm:
       enable_responses_api_store: false
       logging_level: INFO
-    services:
-      - service_name: qwen36-35b-gpu01
-        model: qwen3.6-35b-a3b-local
-        served_model_name: qwen3.6-35b-a3b-gpu01
-        placement:
-          strategy: exact
-          gpu_indices: [0, 1]
-        topology:
-          tensor_parallel_size: 2
-        runtime:
-          max_model_len: 262144
-          gpu_memory_utilization: 0.95
-          max_num_batched_tokens: 8192
-          max_num_seqs: 8
-          enable_prefix_caching: false
-        extra_args:
-          - --language-model-only
-          - --reasoning-parser
-          - qwen3
+    providers:
+      vllm:
+        runtimes:
+          qwen36-35b-gpu01:
+            model: qwen3.6-35b-a3b-local
+            served_model_name: qwen3.6-35b-a3b-gpu01
+            placement:
+              strategy: exact
+              gpu_indices: [0, 1]
+            topology:
+              tensor_parallel_size: 2
+            runtime:
+              max_model_len: 262144
+              gpu_memory_utilization: 0.95
+              max_num_batched_tokens: 8192
+              max_num_seqs: 8
+              enable_prefix_caching: false
+            extra_args:
+              - --language-model-only
+              - --reasoning-parser
+              - qwen3
 
-      - service_name: qwen36-35b-gpu23
-        model: qwen3.6-35b-a3b-local
-        served_model_name: qwen3.6-35b-a3b-gpu23
-        placement:
-          strategy: exact
-          gpu_indices: [2, 3]
-        topology:
-          tensor_parallel_size: 2
-        runtime:
-          max_model_len: 262144
-          gpu_memory_utilization: 0.95
-          max_num_batched_tokens: 8192
-          max_num_seqs: 8
-          enable_prefix_caching: false
-        extra_args:
-          - --language-model-only
-          - --reasoning-parser
-          - qwen3
-
-    router:
-      aliases:
-        qwen3.6-35b-a3b-gpu01: qwen36-35b-gpu01
-        qwen3.6-35b-a3b-gpu23: qwen36-35b-gpu23
+          qwen36-35b-gpu23:
+            model: qwen3.6-35b-a3b-local
+            served_model_name: qwen3.6-35b-a3b-gpu23
+            placement:
+              strategy: exact
+              gpu_indices: [2, 3]
+            topology:
+              tensor_parallel_size: 2
+            runtime:
+              max_model_len: 262144
+              gpu_memory_utilization: 0.95
+              max_num_batched_tokens: 8192
+              max_num_seqs: 8
+              enable_prefix_caching: false
+            extra_args:
+              - --language-model-only
+              - --reasoning-parser
+              - qwen3
+    gateways:
+      litellm:
+        enabled: true
+    frontends:
+      open_webui:
+        enabled: true
+        provider: litellm
+    routes:
+      qwen3.6-35b-a3b-gpu01:
+        provider: vllm
+        runtime: qwen36-35b-gpu01
+      qwen3.6-35b-a3b-gpu23:
+        provider: vllm
+        runtime: qwen36-35b-gpu23
 EOF
 ```
 
@@ -174,7 +185,7 @@ HF_TOKEN=your_token_here
 From the repo root:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env up -d
+vllm-stack up -d
 ```
 
 ---
@@ -184,7 +195,7 @@ docker compose -f generated/docker-compose.yml --env-file generated/.env up -d
 Check that both model endpoints are exposed:
 
 ```bash
-curl http://127.0.0.1:14042/v1/models   -H "Authorization: Bearer $(grep '^LITELLM_MASTER_KEY=' generated/.env | cut -d= -f2-)"
+vllm-stack smoke-test
 ```
 
 You should see:

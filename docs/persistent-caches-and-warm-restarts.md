@@ -1,13 +1,26 @@
 # Persistent caches and warm restarts
 
-Two on-disk caches keep restart time short without changing model semantics or
-runtime performance. Both are mounted into every rendered vLLM Compose
-service. Neither replaces the cost of moving model weights into GPU memory —
-that work happens on every container start.
+Provider-specific on-disk state keeps restart time short without changing model
+semantics or runtime performance. vLLM runtimes use Hugging Face and vLLM
+caches. Ollama uses its own model store. None of these replaces the cost of
+moving model weights into GPU memory — that work happens whenever the provider
+process loads a model.
 
 ## What gets cached
 
-### Hugging Face cache — `state.hf_cache → /root/.cache/huggingface`
+### Ollama model store — `state.ollama -> /root/.ollama`
+
+Ollama downloads GGUF/model blobs into `/root/.ollama`. The Compose template
+mounts `state.ollama` there whenever the Ollama provider is enabled. Direct
+Ollama profiles therefore survive `down`, `up`, `switch`, and `render` without
+re-pulling models.
+
+Ollama model residency is controlled by daemon/request settings such as
+`keep_alive` / `OLLAMA_KEEP_ALIVE`. A short keep-alive can let a mostly idle
+home-assistant-style backend unload models after use; the next request pays the
+load cost again.
+
+### Hugging Face cache — `state.hf_cache -> /root/.cache/huggingface`
 
 The Hugging Face Hub client downloads model weights, tokenizers, and config
 files into this directory the first time a model is requested. Persisting the
@@ -17,7 +30,7 @@ this can be the difference between minutes and hours of cold start.
 
 This mount existed before the vLLM cache was added; it is unchanged.
 
-### vLLM cache — `state.vllm_cache → /root/.cache/vllm`
+### vLLM cache — `state.vllm_cache -> /root/.cache/vllm`
 
 vLLM stores compiled artifacts under `VLLM_CACHE_ROOT` (defaulted to
 `/root/.cache/vllm` inside the container). The most expensive entries are
@@ -39,12 +52,34 @@ and trigger a recompile. **Do not** add `--enforce-eager` or `-O0` to shave
 seconds off the restart — that sacrifices steady-state throughput to skip a
 one-time cost the cache already amortises.
 
+### Secondary compiler caches
+
+The Compose template also persists the other obvious startup caches that sit
+outside `VLLM_CACHE_ROOT`:
+
+- `state.torch_cache -> /root/.cache/torch` for PyTorch / TorchInductor
+  artifacts, with `TORCH_HOME` and `TORCHINDUCTOR_CACHE_DIR` set explicitly.
+- `state.triton_cache -> /root/.cache/triton` for Triton kernels, with
+  `TRITON_CACHE_DIR` set explicitly.
+- `state.cuda_cache -> /root/.cache/nvidia/ComputeCache` for NVIDIA driver
+  JIT artifacts, with `CUDA_CACHE_PATH` set explicitly.
+
+These caches reduce repeated compile/JIT work, but they do not make model
+switching instantaneous. A vLLM process still has to import Python modules,
+construct the engine, deserialize the selected model, allocate KV cache, move
+weights to the GPU, and run any cache-missed graph/cuda-graph setup.
+
 ## What is not cached
 
 Model weights still have to be loaded from `/root/.cache/huggingface` (CPU
 RAM / page cache) into GPU HBM after every container restart. There is no
 way around this without keeping the engine process alive — i.e. avoiding
 the restart in the first place. See the "minimal restart" guidance below.
+
+Switching a single vLLM runtime from model A to model B still means replacing
+the vLLM engine process, because vLLM serves one model configuration per
+process in this stack. That is why even tiny models can take tens of seconds
+to come back healthy: the expensive work is not just downloading weights.
 
 ## Shared memory: `ipc: host`
 
@@ -59,23 +94,35 @@ sized for your tensor-parallel topology — typically a few GiB for TP > 1.
 
 ## Minimal-restart workflow
 
+LiteLLM deliberately does **not** depend on provider health in the rendered
+Compose file. That prevents Compose from restarting LiteLLM every time a vLLM
+runtime container is replaced during a model swap. The CLI refreshes LiteLLM's
+route table through its admin API when possible; smoke tests retry briefly
+while the selected upstream model finishes loading.
+
 When you are iterating on a single profile and don't want to bounce the whole
 stack:
 
 ```bash
-# Pull the new image first so the outage starts only after the layers are local.
-docker compose -f generated/docker-compose.yml pull vllm-<profile>
+# Pull refreshed images through the rendered Compose wrapper.
+vllm-stack pull vllm-<profile>
 
-# Recreate just the one service. --no-deps avoids restarting Postgres /
-# litellm / open-webui. --force-recreate ensures the new image and any
-# changed config are picked up even if Compose thinks the service is "up".
-docker compose -f generated/docker-compose.yml up -d \
-  --no-deps --force-recreate vllm-<profile>
+# Restart just the one service through the wrapper. This avoids bouncing
+# Postgres / LiteLLM / Open WebUI.
+vllm-stack restart vllm-<profile>
 ```
 
 For a full stack restart (e.g. after `vllm-stack render` against a new
 profile), `vllm-stack down && vllm-stack up -d` is the safe path; persistent
-volumes (Postgres, OWUI data, both caches) are not touched by `down`.
+volumes and bind mounts (Postgres, Open WebUI data, Ollama model store, and
+vLLM caches) are not touched by `down`.
+
+For direct Ollama model pulls, operate on the shared daemon instead of replacing
+the container:
+
+```bash
+vllm-stack ollama-pull qwen3.5:4b
+```
 
 ## Verifying the cache is being reused
 

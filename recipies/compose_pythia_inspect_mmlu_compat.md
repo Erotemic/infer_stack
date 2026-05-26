@@ -1,5 +1,8 @@
 # Compose recipe: Pythia with LiteLLM-only chat compatibility (Inspect / MMLU)
 
+
+> Schema note: built-in profiles now resolve to stack-graph profiles. vLLM runtimes live under `providers.vllm.runtimes`, LiteLLM routes live under `routes`, and direct Ollama profiles can run without LiteLLM.
+
 This recipe uses the built-in `pythia-inspect-mmlu-compat` profile to
 serve two Pythia base models as completions models, with a LiteLLM-only
 adapter that flattens chat-shaped requests into a plain prompt before
@@ -66,15 +69,14 @@ restart only LiteLLM — leave the vLLM containers untouched:
 ```bash
 python manage.py render
 
-docker compose -f generated/docker-compose.yml --env-file generated/.env \
-  up -d --no-deps --force-recreate litellm
+vllm-stack restart litellm
 ```
 
 `--no-deps` prevents Compose from touching the vLLM Pythia containers
 or the Postgres containers. To confirm what's running first:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env ps
+vllm-stack ps
 ```
 
 Avoid `docker compose down`, `down -v`, or a profile-wide
@@ -104,7 +106,7 @@ pythia-inspect-mmlu-compat --format yaml` and look at `state.runtime`.
 A chat-shaped call should now work end-to-end:
 
 ```bash
-source generated/.env
+eval "$(vllm-stack env --export)"
 curl -s http://127.0.0.1:14042/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \

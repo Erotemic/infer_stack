@@ -1,32 +1,29 @@
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-  # Persist YAML-loaded models into postgres-litellm so the admin API
-  # (/model/new, /model/delete) can operate on them. Without this, YAML
-  # models live in memory only and /model/delete returns "not found in DB",
-  # forcing a litellm container restart on every profile switch.
   store_model_in_db: True
 
 model_list:
-{% for alias, target in lock.deployment.router.aliases.items() %}
-{% set svc = (lock.deployment.services | selectattr('service_name', 'equalto', target) | first) %}
-{% set max_output = svc.max_model_len // 2 %}
-{% set max_input = svc.max_model_len - max_output %}
+{% for alias, route in lock.deployment.gateways.litellm.routes.items() %}
+{% set max_model_len = route.max_model_len or 4096 %}
+{% set max_output = max_model_len // 2 %}
+{% set max_input = max_model_len - max_output %}
   - model_name: {{ alias }}
     litellm_params:
-{% if svc.protocol_mode == "completions" %}
-      model: text-completion-openai/{{ svc.served_model_name }}
-{% else %}
-      model: openai/{{ svc.served_model_name }}
-{% endif %}
-      api_base: http://vllm-{{ svc.service_name }}:8000/v1
+{% if route.provider == 'ollama' %}
+      model: ollama_chat/{{ route.upstream_model }}
+      api_base: http://ollama:11434
+      drop_params: true
+{% elif route.protocol_mode == 'completions' %}
+      model: text-completion-openai/{{ route.served_model_name }}
+      api_base: http://{{ route.upstream_service_name or route.service_name }}:8000/v1
       api_key: os.environ/VLLM_BACKEND_API_KEY
-{% if svc.protocol_mode != "completions" %}
+{% else %}
+      model: openai/{{ route.served_model_name }}
+      api_base: http://{{ route.upstream_service_name or route.service_name }}:8000/v1
+      api_key: os.environ/VLLM_BACKEND_API_KEY
       merge_reasoning_content_in_choices: true
 {% endif %}
-{% if svc.chat_compat_enabled and svc.chat_compat_strategy == "flat_messages" %}
-      # chat_compat: flat_messages
-      # Flatten chat-shaped requests into a plain prompt for completions-only
-      # upstreams. No role labels; messages are concatenated with newlines.
+{% if route.chat_compat_enabled and route.chat_compat_strategy == 'flat_messages' %}
       initial_prompt_value: ""
       roles:
         system:
@@ -41,7 +38,7 @@ model_list:
       final_prompt_value: ""
 {% endif %}
     model_info:
-      max_tokens: {{ svc.max_model_len }}
+      max_tokens: {{ max_model_len }}
       max_input_tokens: {{ max_input }}
       max_output_tokens: {{ max_output }}
 {% endfor %}

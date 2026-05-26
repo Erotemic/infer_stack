@@ -1,5 +1,8 @@
 # Compose recipe: Pythia 6.9B + Pythia 2.8B + Qwen3.6-35B-A3B on a 4x96GB host
 
+
+> Schema note: built-in profiles now resolve to stack-graph profiles. vLLM runtimes live under `providers.vllm.runtimes`, LiteLLM routes live under `routes`, and direct Ollama profiles can run without LiteLLM.
+
 This recipe uses the built-in `pythia-qwen3.6-mixed-4x96` profile to serve
 three models behind a single LiteLLM router on a machine with **4 x 96GB
 GPUs**:
@@ -60,15 +63,14 @@ fields) without disturbing any of the running vLLM containers:
 ```bash
 python manage.py render
 
-docker compose -f generated/docker-compose.yml --env-file generated/.env \
-  up -d --no-deps --force-recreate litellm
+vllm-stack restart litellm
 ```
 
 `--no-deps` keeps `vllm-qwen36-35b`, `vllm-pythia-69b`, and
 `vllm-pythia-28b` running. Confirm with:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env ps
+vllm-stack ps
 ```
 
 Avoid `docker compose down`, `down -v`, or a profile-wide
@@ -82,8 +84,7 @@ active use — re-render and recreate only the Qwen vLLM service:
 
 ```bash
 python manage.py render
-docker compose -f generated/docker-compose.yml --env-file generated/.env \
-  up -d --no-deps --force-recreate vllm-qwen36-35b
+vllm-stack restart vllm-qwen36-35b
 ```
 
 `--no-deps` prevents Compose from touching `postgres-litellm`,
@@ -91,7 +92,7 @@ docker compose -f generated/docker-compose.yml --env-file generated/.env \
 services. To confirm the rendered service name first:
 
 ```bash
-docker compose -f generated/docker-compose.yml --env-file generated/.env ps
+vllm-stack ps
 ```
 
 Avoid `docker compose down`, `down -v`, or a profile-wide
@@ -120,7 +121,7 @@ box.
 If `qwen3_coder` parses tool calls poorly against your specific prompts,
 `qwen3_xml` is a manual fallback worth testing — but it is not what the
 model card recommends. To try it, change the `parser:` value in
-`default-profiles.yaml` (or in a local `models.yaml` override) and rerun
+`default-profiles.yaml` (or in a local stack profile under `models.yaml`) and rerun
 the targeted Qwen restart above.
 
 ---
@@ -139,7 +140,7 @@ Edit `generated/.env` and set `HF_TOKEN=...`. Unknown `.env` keys
 ## 3. Verify the routes
 
 ```bash
-source generated/.env
+eval "$(vllm-stack env --export)"
 curl -s http://127.0.0.1:14042/v1/models \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" | jq '.data[].id'
 ```

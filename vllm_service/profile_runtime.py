@@ -27,6 +27,9 @@ def vllm_args(service: dict[str, Any]) -> list[str]:
 def default_base_url(deployment: dict[str, Any], *, explicit: str | None = None) -> str:
     if explicit:
         return explicit.rstrip("/")
+    access = deployment.get("access", {}).get("default") or {}
+    if access.get("base_url"):
+        return str(access["base_url"]).rstrip("/")
     backend = deployment.get("backend", "compose")
     if backend == "kubeai":
         ingress = deployment.get("cluster", {}).get("ingress", {}) or {}
@@ -34,6 +37,10 @@ def default_base_url(deployment: dict[str, Any], *, explicit: str | None = None)
         if ingress.get("enabled") and host:
             return f"http://{host}/openai/v1"
         return "http://127.0.0.1:8000/openai/v1"
+    if (deployment.get("gateways", {}).get("litellm") or {}).get("enabled"):
+        return f"http://127.0.0.1:{deployment.get('ports', {}).get('litellm', 14042)}/v1"
+    if (deployment.get("providers", {}).get("ollama") or {}).get("enabled"):
+        return f"http://127.0.0.1:{deployment.get('ports', {}).get('ollama', 11434)}"
     return f"http://127.0.0.1:{deployment.get('ports', {}).get('litellm', 14042)}/v1"
 
 

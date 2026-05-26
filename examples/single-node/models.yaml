@@ -1,8 +1,7 @@
-models:
+vllm_models:
   qwen-small:
     hf_model_id: Qwen/Qwen2.5-7B-Instruct
     features: [TextGeneration]
-    engine: VLLM
     defaults:
       max_model_len: 32768
       gpu_memory_utilization: 0.9
@@ -12,11 +11,12 @@ models:
   qwen-large:
     hf_model_id: Qwen/Qwen2.5-32B-Instruct
     features: [TextGeneration]
-    engine: VLLM
     defaults:
       max_model_len: 32768
       gpu_memory_utilization: 0.92
       max_num_batched_tokens: 4096
       max_num_seqs: 8
       enable_prefix_caching: true
+
+ollama_models: {}
 profiles: {}

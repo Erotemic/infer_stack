@@ -1,4 +1,5 @@
 name: aiq-multi-model
+backend: compose
 active_profile: qwen-mixed
 catalog:
   builtin_models: true
@@ -18,33 +19,70 @@ ports:
   litellm: 14042
   open_webui: 13000
   postgres: 15432
+  ollama: 11434
 state:
   hf_cache: ./state/hf-cache
+  vllm_cache: ./state/vllm-cache
+  ollama: ./state/ollama
   open_webui: ./state/open-webui
-  postgres: ./state/postgres
+  postgres_open_webui: ./state/postgres-open-webui
+  postgres_litellm: ./state/postgres-litellm
+  runtime: ./state/runtime
 profiles:
   qwen-mixed:
-    description: One Qwen model per GPU group with LiteLLM routing.
-    services:
-      - service_name: chat
-        model: qwen3.5-27b
-        placement:
-          strategy: exact
-          gpu_indices: [0]
-      - service_name: fast
-        model: qwen3.5-2b
-        placement:
-          strategy: exact
-          gpu_indices: [1]
-      - service_name: big
-        model: qwen3.5-122b
-        placement:
-          strategy: exact
-          gpu_indices: [2, 3]
-        topology:
-          tensor_parallel_size: 2
-    router:
-      aliases:
-        qwen3.5-27b: chat
-        qwen3.5-2b: fast
-        qwen3.5-122b: big
+    description: Three vLLM runtimes behind one LiteLLM/Open WebUI route surface.
+    providers:
+      vllm:
+        runtimes:
+          chat:
+            model: qwen3.5-27b
+            placement:
+              strategy: exact
+              gpu_indices: [0]
+          fast:
+            model: qwen3.5-2b
+            placement:
+              strategy: exact
+              gpu_indices: [1]
+          big:
+            model: qwen3.5-122b
+            placement:
+              strategy: exact
+              gpu_indices: [2, 3]
+            topology:
+              tensor_parallel_size: 2
+    gateways:
+      litellm:
+        enabled: true
+    frontends:
+      open_webui:
+        enabled: true
+        provider: litellm
+    routes:
+      qwen3.5-27b:
+        provider: vllm
+        runtime: chat
+      qwen3.5-2b:
+        provider: vllm
+        runtime: fast
+      qwen3.5-122b:
+        provider: vllm
+        runtime: big
+
+  local-ollama-direct:
+    description: Single Ollama daemon with Open WebUI connected directly.
+    providers:
+      ollama:
+        enabled: true
+        gpu_indices: [0, 1]
+        publish_port: true
+        keep_alive: 2m
+        context_length: 4096
+    gateways:
+      litellm:
+        enabled: false
+    frontends:
+      open_webui:
+        enabled: true
+        provider: ollama
+    routes: {}
