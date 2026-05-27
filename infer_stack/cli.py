@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # PYTHON_ARGCOMPLETE_OK
-"""scriptconfig-based CLI for vllm-stack.
+"""scriptconfig-based CLI for infer-stack.
 
 Each subcommand is a ``scfg.DataConfig`` subclass; ``ManageCLI`` composes
-them into a single ``scfg.ModalCLI`` exposed as the ``vllm-stack`` entry
+them into a single ``scfg.ModalCLI`` exposed as the ``infer-stack`` entry
 point. Because every subcommand is a ``DataConfig``, the same class can
-be invoked from the shell (``vllm-stack render --profile X``) or from
+be invoked from the shell (``infer-stack render --profile X``) or from
 Python (``RenderCLI.main(argv=False, profile='X')``).
 
 Layout:
@@ -135,7 +135,7 @@ def load_config() -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(
             f"No config.yaml found at {path}. Run "
-            "`vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first, "
+            "`infer-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first, "
             f"or point ${CONFIG_DIR_ENV} / --config-dir at an existing config."
         )
     return _hydrate_config_defaults(load_yaml(path))
@@ -263,61 +263,61 @@ def apply_config_overrides(cfg: dict[str, Any], args: Any | None) -> dict[str, A
     out.setdefault("cluster", {})
     out["cluster"].setdefault("ingress", {})
 
-    backend = _arg_or_env(overrides, "backend", "VLLM_SERVICE_BACKEND")
+    backend = _arg_or_env(overrides, "backend", "INFER_STACK_BACKEND")
     if backend:
         out["backend"] = backend
 
-    profile = _arg_or_env(overrides, "profile", "VLLM_SERVICE_PROFILE")
+    profile = _arg_or_env(overrides, "profile", "INFER_STACK_PROFILE")
     if profile:
         out["active_profile"] = profile
 
-    compose_cmd = _arg_or_env(overrides, "compose_cmd", "VLLM_SERVICE_COMPOSE_CMD")
+    compose_cmd = _arg_or_env(overrides, "compose_cmd", "INFER_STACK_COMPOSE_CMD")
     if compose_cmd:
         out["runtime"]["compose_cmd"] = compose_cmd
 
     litellm_port = overrides.get("litellm_port")
     if litellm_port is None:
-        litellm_port = _env_int("VLLM_SERVICE_LITELLM_PORT")
+        litellm_port = _env_int("INFER_STACK_LITELLM_PORT")
     if litellm_port is not None:
         out["ports"]["litellm"] = litellm_port
 
     open_webui_port = overrides.get("open_webui_port")
     if open_webui_port is None:
-        open_webui_port = _env_int("VLLM_SERVICE_OPEN_WEBUI_PORT")
+        open_webui_port = _env_int("INFER_STACK_OPEN_WEBUI_PORT")
     if open_webui_port is not None:
         out["ports"]["open_webui"] = open_webui_port
 
     postgres_port = overrides.get("postgres_port")
     if postgres_port is None:
-        postgres_port = _env_int("VLLM_SERVICE_POSTGRES_PORT")
+        postgres_port = _env_int("INFER_STACK_POSTGRES_PORT")
     if postgres_port is not None:
         out["ports"]["postgres"] = postgres_port
 
-    state_root = _arg_or_env(overrides, "state_root", "VLLM_SERVICE_STATE_ROOT")
+    state_root = _arg_or_env(overrides, "state_root", "INFER_STACK_STATE_ROOT")
     if state_root:
         out["state"].update(_configured_state_paths(state_root))
 
-    runtime_dir = _arg_or_env(overrides, "runtime_dir", "VLLM_SERVICE_RUNTIME_DIR")
+    runtime_dir = _arg_or_env(overrides, "runtime_dir", "INFER_STACK_RUNTIME_DIR")
     if runtime_dir:
         out["state"]["runtime"] = runtime_dir
 
-    generated_dir_override = _arg_or_env(overrides, "generated_dir", "VLLM_SERVICE_GENERATED_DIR")
+    generated_dir_override = _arg_or_env(overrides, "generated_dir", "INFER_STACK_GENERATED_DIR")
     if generated_dir_override:
         out["output"]["generated_dir"] = generated_dir_override
     elif not out["output"].get("generated_dir"):
         out["output"]["generated_dir"] = default_output_config()["generated_dir"]
 
-    namespace = _arg_or_env(overrides, "namespace", "VLLM_SERVICE_NAMESPACE")
+    namespace = _arg_or_env(overrides, "namespace", "INFER_STACK_NAMESPACE")
     if namespace:
         out["cluster"]["namespace"] = namespace
 
-    ingress_host = _arg_or_env(overrides, "ingress_host", "VLLM_SERVICE_INGRESS_HOST")
+    ingress_host = _arg_or_env(overrides, "ingress_host", "INFER_STACK_INGRESS_HOST")
     if ingress_host:
         out["cluster"]["ingress"]["host"] = ingress_host
 
     ingress_enabled = overrides.get("ingress_enabled")
     if ingress_enabled is None:
-        ingress_enabled = _env_bool("VLLM_SERVICE_INGRESS_ENABLED")
+        ingress_enabled = _env_bool("INFER_STACK_INGRESS_ENABLED")
     if ingress_enabled is not None:
         out["cluster"]["ingress"]["enabled"] = bool(ingress_enabled)
 
@@ -340,17 +340,17 @@ _OVERRIDE_ATTRS = (
 )
 
 _OVERRIDE_ENVS = (
-    "VLLM_SERVICE_BACKEND",
-    "VLLM_SERVICE_PROFILE",
-    "VLLM_SERVICE_COMPOSE_CMD",
-    "VLLM_SERVICE_LITELLM_PORT",
-    "VLLM_SERVICE_OPEN_WEBUI_PORT",
-    "VLLM_SERVICE_POSTGRES_PORT",
-    "VLLM_SERVICE_NAMESPACE",
-    "VLLM_SERVICE_INGRESS_HOST",
-    "VLLM_SERVICE_INGRESS_ENABLED",
-    "VLLM_SERVICE_GENERATED_DIR",
-    "VLLM_SERVICE_ALLOWED_GPUS",
+    "INFER_STACK_BACKEND",
+    "INFER_STACK_PROFILE",
+    "INFER_STACK_COMPOSE_CMD",
+    "INFER_STACK_LITELLM_PORT",
+    "INFER_STACK_OPEN_WEBUI_PORT",
+    "INFER_STACK_POSTGRES_PORT",
+    "INFER_STACK_NAMESPACE",
+    "INFER_STACK_INGRESS_HOST",
+    "INFER_STACK_INGRESS_ENABLED",
+    "INFER_STACK_GENERATED_DIR",
+    "INFER_STACK_ALLOWED_GPUS",
 )
 
 
@@ -414,7 +414,7 @@ def effective_inventory(args: Any | None) -> dict[str, Any] | None:
     overrides = _as_mapping(args)
     spec = overrides.get("simulate_hardware")
     allowed = _parse_allowed_gpus(
-        overrides.get("allowed_gpus") or _env_text("VLLM_SERVICE_ALLOWED_GPUS")
+        overrides.get("allowed_gpus") or _env_text("INFER_STACK_ALLOWED_GPUS")
     )
     if not spec and allowed is None:
         return None
@@ -430,7 +430,7 @@ def config_for_runtime(args: Any | None, *, allow_missing: bool = False) -> dict
     else:
         raise SystemExit(
             f"No config.yaml found at {config_path()}. Run "
-            "`vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first, "
+            "`infer-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default` first, "
             f"or point ${CONFIG_DIR_ENV} / --config-dir at an existing config."
         )
     return apply_config_overrides(cfg, args)
@@ -840,7 +840,7 @@ def _explain_readiness_message(msg: str) -> str:
         return (
             msg
             + "\n  hint: the frontend or caller cannot resolve/reach the LiteLLM service. "
-            "Run `vllm-stack diagnose --logs --tail 80` to check whether the active profile renders LiteLLM and whether the container is running. "
+            "Run `infer-stack diagnose --logs --tail 80` to check whether the active profile renders LiteLLM and whether the container is running. "
             "If diagnose shows `oom=true` or `exit=137`, Docker killed LiteLLM rather than merely waiting on a vLLM upstream."
         )
     if "connection error" in lower or "connection refused" in lower or "cannot connect to host vllm" in lower:
@@ -1143,7 +1143,7 @@ class _PathOverridesMixin(scfg.DataConfig):
         type=str,
         help=(
             f"Directory containing config.yaml / models.yaml. Defaults to "
-            f"~/.config/vllm_service (XDG_CONFIG_HOME) or ${CONFIG_DIR_ENV} when set."
+            f"~/.config/infer_stack (XDG_CONFIG_HOME) or ${CONFIG_DIR_ENV} when set."
         ),
     )
     data_dir = scfg.Value(
@@ -1151,7 +1151,7 @@ class _PathOverridesMixin(scfg.DataConfig):
         type=str,
         help=(
             f"Directory for rendered artifacts and bind-mount state. Defaults to "
-            f"~/.local/share/vllm_service (XDG_DATA_HOME) or ${DATA_DIR_ENV} when set."
+            f"~/.local/share/infer_stack (XDG_DATA_HOME) or ${DATA_DIR_ENV} when set."
         ),
     )
 
@@ -1192,7 +1192,7 @@ class _GeneratedDirOverrideMixin(scfg.DataConfig):
         help=(
             "Directory to write rendered artifacts (docker-compose.yml, .env, "
             "plan.yaml, kubeai/*) into. Defaults to <data-dir>/generated. May "
-            "also be set via VLLM_SERVICE_GENERATED_DIR or output.generated_dir."
+            "also be set via INFER_STACK_GENERATED_DIR or output.generated_dir."
         ),
     )
 
@@ -1217,7 +1217,7 @@ class _AllowedGpusMixin(scfg.DataConfig):
             "Restrict placement to a comma-separated list of GPU indices "
             "(e.g. '1' or '1,3'). Real indices are preserved — the rendered "
             "compose stack pins device_ids to exactly those GPUs. May also "
-            "be set via VLLM_SERVICE_ALLOWED_GPUS. Useful for integration "
+            "be set via INFER_STACK_ALLOWED_GPUS. Useful for integration "
             "tests on machines where some GPUs are tied up."
         ),
     )
@@ -1554,7 +1554,7 @@ class DescribeProfileCLI(
             raise SystemExit("describe-profile: missing required profile name")
         contract = load_profile_contract(
             overrides["profile"],
-            backend=_arg_or_env(overrides, "backend", "VLLM_SERVICE_BACKEND"),
+            backend=_arg_or_env(overrides, "backend", "INFER_STACK_BACKEND"),
             simulate_hardware_spec=overrides.get("simulate_hardware"),
         )
         return _print_structured(contract, overrides["format"], overrides.get("output"))
@@ -1823,7 +1823,7 @@ class DeployCLI(_PlanOverridesCLI):
                 namespace = cfg.get("cluster", {}).get("namespace", "kubeai")
                 raise SystemExit(
                     f"Failed to deploy to namespace {namespace!r}. Confirm "
-                    f"`vllm-stack setup --backend kubeai --namespace {namespace}` "
+                    f"`infer-stack setup --backend kubeai --namespace {namespace}` "
                     "matches the namespace where the KubeAI Helm release is installed.\n"
                     f"Original error: {ex}"
                 ) from ex
@@ -1858,10 +1858,10 @@ class EnvCLI(
         env_file = runtime_env_path(cfg)
         if not env_file.exists():
             raise SystemExit(
-                f"No .env at {env_file}. Run `vllm-stack render` first."
+                f"No .env at {env_file}. Run `infer-stack render` first."
             )
         # Default with no flags and no key: print the path so users can do
-        #   `source $(vllm-stack env)` (with `set -a` if they want export semantics).
+        #   `source $(infer-stack env)` (with `set -a` if they want export semantics).
         if config.key is None and not config.export:
             print(env_file)
             return 0
@@ -1898,7 +1898,7 @@ class StatusCLI(
             except CommandError as ex:
                 raise SystemExit(
                     f"Failed to query KubeAI resources in namespace {namespace!r}. Confirm "
-                    f"`vllm-stack setup --backend kubeai --namespace {namespace}` "
+                    f"`infer-stack setup --backend kubeai --namespace {namespace}` "
                     "matches the namespace where the KubeAI Helm release is installed.\n"
                     f"Original error: {ex}"
                 ) from ex
@@ -2068,7 +2068,7 @@ class OllamaPullCLI(_PathOverridesMixin, _BackendOverrideMixin, _ComposeOverride
         config = cls.cli(argv=argv, data=kwargs)
         _apply_path_overrides(config)
         if not config.model:
-            raise SystemExit("ollama-pull: missing required model tag, e.g. `vllm-stack ollama-pull smollm2:135m`")
+            raise SystemExit("ollama-pull: missing required model tag, e.g. `infer-stack ollama-pull smollm2:135m`")
         cfg = config_for_runtime(config)
         if backend_name(cfg) != "compose":
             raise SystemExit("`ollama-pull` only supports the compose backend.")
@@ -2224,7 +2224,7 @@ def _ready_ollama_probe(
     model_name = model or (models[0].get("name") if models else None)
     if not model_name:
         if require_generation:
-            return False, "Ollama is reachable but no model is installed; run `vllm-stack ollama-pull <tag>`"
+            return False, "Ollama is reachable but no model is installed; run `infer-stack ollama-pull <tag>`"
         return True, "Ollama API is reachable"
     if not require_generation:
         return True, f"Ollama API is reachable; selected model {model_name}"
@@ -2315,9 +2315,9 @@ def _wait_until_ready(
                 "Timed out waiting for the active stack to serve requests.\n"
                 f"Last probe: {_explain_readiness_message(last_message)}\n"
                 "Useful diagnostics:\n"
-                "  vllm-stack diagnose --logs --tail 80\n"
-                "  vllm-stack ps\n"
-                "  vllm-stack logs vllm-* litellm open-webui"
+                "  infer-stack diagnose --logs --tail 80\n"
+                "  infer-stack ps\n"
+                "  infer-stack logs vllm-* litellm open-webui"
             )
         if not quiet and (attempt == 1 or attempt % 6 == 0):
             print(f"Waiting for readiness: {_explain_readiness_message(last_message)}")
@@ -2386,7 +2386,7 @@ def _smoke_request(
             raise SystemExit(
                 f"Request to {url} timed out after {timeout}s.\n"
                 "The model may still be loading, or the server is overloaded.\n"
-                "  vllm-stack logs vllm-*"
+                "  infer-stack logs vllm-*"
             ) from ex
         except requests.exceptions.ConnectionError as ex:
             last_conn = ex
@@ -2407,15 +2407,15 @@ def _smoke_request(
                     f"Connection to {url} was closed before a response arrived.\n"
                     "The router is listening but an upstream service is not ready yet.\n"
                     "Check container status and logs:\n"
-                    "  vllm-stack ps\n"
-                    "  vllm-stack logs vllm-*"
+                    "  infer-stack ps\n"
+                    "  infer-stack logs vllm-*"
                 ) from ex
             if "Connection refused" in cause_str or "Failed to establish a new connection" in cause_str:
                 raise SystemExit(
                     f"Could not connect to {url}: nothing is listening yet.\n"
-                    "If you just ran `vllm-stack up`, give the router a few seconds.\n"
-                    "  vllm-stack ps                # confirm the litellm container is running\n"
-                    "  vllm-stack logs litellm      # check for startup errors"
+                    "If you just ran `infer-stack up`, give the router a few seconds.\n"
+                    "  infer-stack ps                # confirm the litellm container is running\n"
+                    "  infer-stack logs litellm      # check for startup errors"
                 ) from ex
             raise SystemExit(f"Connection error reaching {url}: {cause_str}") from ex
     else:  # pragma: no cover - defensive; loop exits via break or raise
@@ -2437,14 +2437,14 @@ def _smoke_request(
                 "The auth key didn't match what the running container expects.\n"
                 "If you re-rendered after the container started, the key in .env "
                 "may have changed. Restart with:\n"
-                "  vllm-stack down && vllm-stack up -d\n"
+                "  infer-stack down && infer-stack up -d\n"
                 f"Response: {body}"
             )
         if status == 503:
             raise SystemExit(
                 f"{status} {reason} from {url}.\n"
                 "An upstream service is unavailable (commonly the vLLM engine is still loading).\n"
-                "  vllm-stack logs vllm-*\n"
+                "  infer-stack logs vllm-*\n"
                 f"Response: {body}"
             )
         raise SystemExit(
@@ -2503,9 +2503,9 @@ def _ollama_smoke_test(
         raise SystemExit(
             "Ollama is reachable, but no models are installed in its model store.\n"
             "Pull one through the CLI wrapper, for example:\n"
-            "  vllm-stack ollama-pull smollm2:135m\n"
+            "  infer-stack ollama-pull smollm2:135m\n"
             "Then rerun:\n"
-            "  vllm-stack smoke-test --model smollm2:135m"
+            "  infer-stack smoke-test --model smollm2:135m"
         )
     payload = {
         "model": model_name,

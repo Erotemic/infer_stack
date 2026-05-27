@@ -6,9 +6,9 @@ RTX 3090 host.
 ## Qwen3.5 9B on GPU 1
 
 ```bash
-vllm-stack switch qwen3.5-9b-vllm-gpu1-3090 --apply --yes
-vllm-stack wait-ready --model qwen3.5-9b
-vllm-stack smoke-test --model qwen3.5-9b
+infer-stack switch qwen3.5-9b-vllm-gpu1-3090 --apply --yes
+infer-stack wait-ready --model qwen3.5-9b
+infer-stack smoke-test --model qwen3.5-9b
 ```
 
 This profile runs `Qwen/Qwen3.5-9B` through vLLM on physical GPU 1 and routes
@@ -18,9 +18,9 @@ the catalog default to better fit a 24 GB 3090.
 ## Qwen3.6 35B-A3B FP8 on GPU 1, experimental
 
 ```bash
-vllm-stack switch qwen3.6-35b-a3b-vllm-gpu1-3090 --apply --yes
-vllm-stack wait-ready --model qwen3.6-35b-a3b
-vllm-stack smoke-test --model qwen3.6-35b-a3b
+infer-stack switch qwen3.6-35b-a3b-vllm-gpu1-3090 --apply --yes
+infer-stack wait-ready --model qwen3.6-35b-a3b
+infer-stack smoke-test --model qwen3.6-35b-a3b
 ```
 
 This profile uses `Qwen/Qwen3.6-35B-A3B-FP8` with a short context and low

@@ -1,14 +1,14 @@
 # SmolLM2 backend switch test on GPU 1
 
 This is a copy/paste smoke path for a workstation where GPU 1 is available.
-It uses only built-in profiles and `vllm-stack` runtime commands.
+It uses only built-in profiles and `infer-stack` runtime commands.
 
 The two profiles are:
 
 - `smollm2-135m-vllm-gpu1`: Open WebUI -> LiteLLM -> vLLM on physical GPU 1.
 - `smollm2-135m-ollama-gpu1`: Open WebUI -> Ollama on physical GPU 1.
 
-Switching profiles is non-destructive for state. `vllm-stack switch --apply`
+Switching profiles is non-destructive for state. `infer-stack switch --apply`
 re-renders and runs Compose with `--remove-orphans`, but it does not delete
 state directories or model caches. Containers whose definitions are unchanged
 stay up. In this specific vLLM-to-Ollama switch, Open WebUI is recreated because
@@ -16,10 +16,10 @@ its provider changes from LiteLLM to Ollama; LiteLLM and vLLM are removed as
 orphans. You can switch back to the vLLM profile later.
 
 `--apply` already runs the converge step. You only need a separate
-`vllm-stack up -d` after plain `switch` without `--apply`, or when you edited
+`infer-stack up -d` after plain `switch` without `--apply`, or when you edited
 rendered files/configuration by hand and want to reconcile them later.
 
-`vllm-stack wait-ready` is the command to use after a switch when you care
+`infer-stack wait-ready` is the command to use after a switch when you care
 about the model being fully servable, not merely the Docker container being
 started or healthcheck-passing. It polls the same access surface that clients
 use and requires a tiny generation/completion to succeed.
@@ -27,12 +27,12 @@ use and requires a tiny generation/completion to succeed.
 ## 1. vLLM on GPU 1
 
 ```bash
-cd /home/joncrall/code/helm_audit/submodules/vllm_service
+cd /home/joncrall/code/helm_audit/submodules/infer_stack
 
-vllm-stack switch smollm2-135m-vllm-gpu1 --apply --yes
-vllm-stack ps
-vllm-stack wait-ready --model smollm2-135m
-vllm-stack smoke-test --model smollm2-135m
+infer-stack switch smollm2-135m-vllm-gpu1 --apply --yes
+infer-stack ps
+infer-stack wait-ready --model smollm2-135m
+infer-stack smoke-test --model smollm2-135m
 ```
 
 Open WebUI should be available at:
@@ -47,15 +47,15 @@ In this profile, Open WebUI talks to LiteLLM, and LiteLLM routes the
 Useful checks:
 
 ```bash
-vllm-stack logs --tail=120 litellm vllm-chat
-vllm-stack env LITELLM_MASTER_KEY
+infer-stack logs --tail=120 litellm vllm-chat
+infer-stack env LITELLM_MASTER_KEY
 ```
 
 ## 2. Switch to direct Ollama on GPU 1
 
 ```bash
-vllm-stack switch smollm2-135m-ollama-gpu1 --apply --yes
-vllm-stack ps
+infer-stack switch smollm2-135m-ollama-gpu1 --apply --yes
+infer-stack ps
 ```
 
 Expected services now:
@@ -72,10 +72,10 @@ and caches are not deleted.
 Pull the comparable Ollama model through the CLI wrapper:
 
 ```bash
-vllm-stack ollama-pull smollm2:135m
-vllm-stack ollama-list
-vllm-stack wait-ready --model smollm2:135m
-vllm-stack smoke-test --model smollm2:135m
+infer-stack ollama-pull smollm2:135m
+infer-stack ollama-list
+infer-stack wait-ready --model smollm2:135m
+infer-stack smoke-test --model smollm2:135m
 ```
 
 Open WebUI is still available at:
@@ -90,25 +90,25 @@ In this profile, Open WebUI talks directly to Ollama, so it should discover
 Useful checks:
 
 ```bash
-vllm-stack ollama-ps
-vllm-stack logs --tail=120 ollama open-webui
+infer-stack ollama-ps
+infer-stack logs --tail=120 ollama open-webui
 ```
 
 ## 3. Switch back to vLLM
 
 ```bash
-vllm-stack switch smollm2-135m-vllm-gpu1 --apply --yes
-vllm-stack wait-ready --model smollm2-135m
-vllm-stack smoke-test --model smollm2-135m
+infer-stack switch smollm2-135m-vllm-gpu1 --apply --yes
+infer-stack wait-ready --model smollm2-135m
+infer-stack smoke-test --model smollm2-135m
 ```
 
 ## 4. Stop without deleting state
 
 ```bash
-vllm-stack down
+infer-stack down
 ```
 
-`down` does not remove volumes or state directories. Use `vllm-stack purge`
+`down` does not remove volumes or state directories. Use `infer-stack purge`
 only when you intentionally want to delete Docker-written state.
 
 ## Diagnosing readiness during switches
@@ -121,8 +121,8 @@ actually serving requests.
 Use:
 
 ```bash
-vllm-stack diagnose --model smollm2-135m --generation
-vllm-stack diagnose --logs --tail 80
+infer-stack diagnose --model smollm2-135m --generation
+infer-stack diagnose --logs --tail 80
 ```
 
 The first command prints active profile, compose service state, LiteLLM route

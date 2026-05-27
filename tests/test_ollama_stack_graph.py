@@ -4,12 +4,12 @@ from pathlib import Path
 
 import yaml
 
-from vllm_service.backends.compose_renderer import render_compose_artifacts
-from vllm_service.cli import _compose_has_service
-from vllm_service.config import initial_config
-from vllm_service.hardware import simulate_inventory
-from vllm_service.resolver import resolve
-from vllm_service.validator import validate_resolved
+from infer_stack.backends.compose_renderer import render_compose_artifacts
+from infer_stack.cli import _compose_has_service
+from infer_stack.config import initial_config
+from infer_stack.hardware import simulate_inventory
+from infer_stack.resolver import resolve
+from infer_stack.validator import validate_resolved
 
 
 def _cfg(tmp_path: Path, profile: str, backend: str = "compose") -> dict:
@@ -174,7 +174,7 @@ def test_litellm_does_not_depend_on_provider_health_for_model_swaps(tmp_path: Pa
 
 
 def test_litellm_config_model_delete_miss_is_nonfatal() -> None:
-    from vllm_service.cli import _litellm_delete_missed_config_model
+    from infer_stack.cli import _litellm_delete_missed_config_model
 
     class DummyResponse:
         text = ""
@@ -194,7 +194,7 @@ def test_litellm_config_model_delete_miss_is_nonfatal() -> None:
 
 
 def test_schema_v5_default_model_and_protocol_helpers(tmp_path: Path) -> None:
-    from vllm_service.cli import _default_model_for_deployment, _resolve_smoke_protocol_from_deployment
+    from infer_stack.cli import _default_model_for_deployment, _resolve_smoke_protocol_from_deployment
 
     smol = resolve(_cfg(tmp_path, "smollm2-135m-vllm-gpu1"), inventory=simulate_inventory("2x24"))
     assert _default_model_for_deployment(smol) == "smollm2-135m"

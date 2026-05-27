@@ -22,9 +22,9 @@ This deployment is available out of the box as the built-in profile
 `qwen3.6-35b-a3b-dual-tp2-4x96`. To skip writing any local YAML:
 
 ```bash
-vllm-stack setup --backend compose --profile qwen3.6-35b-a3b-dual-tp2-4x96
-vllm-stack render --yes
-vllm-stack up -d
+infer-stack setup --backend compose --profile qwen3.6-35b-a3b-dual-tp2-4x96
+infer-stack render --yes
+infer-stack up -d
 ```
 
 The rest of this recipe walks through the same deployment manually, so you
@@ -35,7 +35,7 @@ can see how the model and profile YAML map to the rendered Compose stack.
 ## 1. Start from the repo root
 
 ```bash
-cd /path/to/vllm_service
+cd /path/to/infer_stack
 ```
 
 ---
@@ -185,7 +185,7 @@ HF_TOKEN=your_token_here
 From the repo root:
 
 ```bash
-vllm-stack up -d
+infer-stack up -d
 ```
 
 ---
@@ -195,7 +195,7 @@ vllm-stack up -d
 Check that both model endpoints are exposed:
 
 ```bash
-vllm-stack smoke-test
+infer-stack smoke-test
 ```
 
 You should see:

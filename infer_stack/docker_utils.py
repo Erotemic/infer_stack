@@ -26,12 +26,12 @@ class PortInUseError(RuntimeError):
         lines.append("")
         lines.append(
             "If the conflict is a leftover container from this stack, run "
-            "`vllm-stack down` (or `docker stop <name> && docker rm <name>`)."
+            "`infer-stack down` (or `docker stop <name> && docker rm <name>`)."
         )
         lines.append(
             "If a non-stack process owns the port, either stop that process or "
-            "pick different ports: `vllm-stack setup --litellm-port N "
-            "--open-webui-port M`, then `vllm-stack render --yes`."
+            "pick different ports: `infer-stack setup --litellm-port N "
+            "--open-webui-port M`, then `infer-stack render --yes`."
         )
         super().__init__("\n".join(lines))
 

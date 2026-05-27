@@ -11,7 +11,7 @@ from ..env_utils import ensure_secret, parse_env_file, write_env_file
 
 
 def _template(name: str) -> str:
-    return files("vllm_service").joinpath(f"templates/{name}").read_text(encoding="utf-8")
+    return files("infer_stack").joinpath(f"templates/{name}").read_text(encoding="utf-8")
 
 
 def render_compose_artifacts(lock_data: dict, *, assume_yes: bool = True) -> None:
@@ -67,24 +67,24 @@ def render_compose_artifacts(lock_data: dict, *, assume_yes: bool = True) -> Non
     # LiteLLM port
     if (gateways.get("litellm") or {}).get("enabled"):
         litellm_port = ports.get("litellm") or DEFAULT_PORTS.get("litellm", 14042)
-        env_values["VLLM_SERVICE_LITELLM_PORT"] = existing.get("VLLM_SERVICE_LITELLM_PORT", str(litellm_port))
+        env_values["INFER_STACK_LITELLM_PORT"] = existing.get("INFER_STACK_LITELLM_PORT", str(litellm_port))
 
     # Open WebUI port
     if (frontends.get("open_webui") or {}).get("enabled"):
         open_webui_port = ports.get("open_webui") or DEFAULT_PORTS.get("open_webui", 13000)
-        env_values["VLLM_SERVICE_OPEN_WEBUI_PORT"] = existing.get("VLLM_SERVICE_OPEN_WEBUI_PORT", str(open_webui_port))
+        env_values["INFER_STACK_OPEN_WEBUI_PORT"] = existing.get("INFER_STACK_OPEN_WEBUI_PORT", str(open_webui_port))
 
     # Ollama port (if publish enabled)
     if (providers.get("ollama") or {}).get("enabled"):
         # Ollama host_port is resolved in the deployment; fall back to DEFAULT_PORTS
         ollama_port = (providers.get("ollama") or {}).get("host_port") or ports.get("ollama") or DEFAULT_PORTS.get("ollama", 11434)
-        env_values["VLLM_SERVICE_OLLAMA_PORT"] = existing.get("VLLM_SERVICE_OLLAMA_PORT", str(ollama_port))
+        env_values["INFER_STACK_OLLAMA_PORT"] = existing.get("INFER_STACK_OLLAMA_PORT", str(ollama_port))
 
     # vLLM runtimes: enumerate and export per-runtime host ports (index-based)
     vllm_runtimes = (providers.get("vllm") or {}).get("runtimes", {}) or {}
     for idx, (name, svc) in enumerate(vllm_runtimes.items()):
         host_port = svc.get("host_port") or ports.get("vllm") or (18000 + idx)
-        env_name = f"VLLM_SERVICE_VLLM_{idx}_PORT"
+        env_name = f"INFER_STACK_VLLM_{idx}_PORT"
         env_values[env_name] = existing.get(env_name, str(host_port))
 
     # Preserve unknown/user-supplied keys, but let managed keys above win.

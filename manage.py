@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from vllm_service.cli import main
+from infer_stack.cli import main
 
 
 if __name__ == "__main__":

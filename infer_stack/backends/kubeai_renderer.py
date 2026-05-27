@@ -40,10 +40,10 @@ def _model_doc(service: dict[str, Any]) -> dict[str, Any]:
         "metadata": {
             "name": service["kubernetes_name"],
             "annotations": {
-                "vllm-service/profile-name": service["profile_name"],
-                "vllm-service/public-name": service["profile_public_name"],
-                "vllm-service/logical-model-name": service["logical_model_name"],
-                "vllm-service/protocol-mode": service["protocol_mode"],
+                "infer-stack/profile-name": service["profile_name"],
+                "infer-stack/public-name": service["profile_public_name"],
+                "infer-stack/logical-model-name": service["logical_model_name"],
+                "infer-stack/protocol-mode": service["protocol_mode"],
             },
         },
         "spec": {

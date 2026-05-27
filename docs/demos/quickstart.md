@@ -21,10 +21,10 @@ Default ports for this profile family:
 - Open WebUI: <http://127.0.0.1:13000>
 
 After setup, all state and generated artifacts live under
-`/data/service/docker/vllm-stack/`:
+`/data/service/docker/infer-stack/`:
 
 ```text
-/data/service/docker/vllm-stack/
+/data/service/docker/infer-stack/
   generated/            <- docker-compose.yml, .env, plan.yaml
   hf-cache/             <- downloaded Hugging Face weights
   vllm-cache/           <- compiled vLLM artifacts
@@ -33,7 +33,7 @@ After setup, all state and generated artifacts live under
   postgres-litellm/     <- LiteLLM database, only when LiteLLM is enabled
   runtime/              <- runtime bind-mount configs such as litellm_config.yaml
 
-~/.config/vllm_service/
+~/.config/infer_stack/
   config.yaml           <- active profile, backend, paths, ports
   models.yaml           <- optional custom vllm_models, ollama_models, profiles
 ```
@@ -41,7 +41,7 @@ After setup, all state and generated artifacts live under
 ## Prerequisites
 
 - Docker with the NVIDIA container runtime (`nvidia-smi` visible inside containers).
-- `vllm-stack` installed in your Python environment.
+- `infer-stack` installed in your Python environment.
 - A Hugging Face token in your shell for gated models:
 
 ```bash
@@ -58,19 +58,19 @@ completions-only. The goal is to validate Docker, GPU placement, LiteLLM, and
 Open WebUI before committing to a large model.
 
 ```bash
-mkdir -p /data/service/docker/vllm-stack
-vllm-stack setup \
+mkdir -p /data/service/docker/infer-stack
+infer-stack setup \
   --backend compose \
   --profile gpt2-single \
-  --state-root /data/service/docker/vllm-stack \
-  --generated-dir /data/service/docker/vllm-stack/generated
+  --state-root /data/service/docker/infer-stack \
+  --generated-dir /data/service/docker/infer-stack/generated
 ```
 
 Render and start:
 
 ```bash
-vllm-stack render --yes
-vllm-stack up -d
+infer-stack render --yes
+infer-stack up -d
 ```
 
 vLLM downloads GPT-2 and compiles a small graph. Expect roughly 30-60 seconds
@@ -79,14 +79,14 @@ on first start and a few seconds on warm restart.
 Watch it come up:
 
 ```bash
-vllm-stack ps
-vllm-stack logs -f
+infer-stack ps
+infer-stack logs -f
 ```
 
 Once all containers are healthy, smoke-test the API:
 
 ```bash
-vllm-stack smoke-test
+infer-stack smoke-test
 ```
 
 Manual completion check:
@@ -94,7 +94,7 @@ Manual completion check:
 ```bash
 curl -s http://127.0.0.1:14042/v1/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(vllm-stack env --key LITELLM_MASTER_KEY)" \
+  -H "Authorization: Bearer $(infer-stack env --key LITELLM_MASTER_KEY)" \
   -d '{
     "model": "gpt2",
     "prompt": "Once upon a time, ",
@@ -108,7 +108,7 @@ switch to a chat-capable profile before using it interactively.
 ## 2. Switch to SmolLM2 135M, chat-capable
 
 ```bash
-vllm-stack switch smollm2-135m-single --apply
+infer-stack switch smollm2-135m-single --apply
 ```
 
 `switch --apply` updates `config.yaml`, re-renders the stack, removes orphaned
@@ -118,7 +118,7 @@ on disk.
 Smoke test again:
 
 ```bash
-vllm-stack smoke-test
+infer-stack smoke-test
 ```
 
 Then open <http://127.0.0.1:13000>. Open WebUI now has a chat-capable route.
@@ -130,18 +130,18 @@ After the plumbing is proven, switch to a real workstation profile. The
 when the policy reserves them:
 
 ```bash
-vllm-stack switch workstation-safe --apply
+infer-stack switch workstation-safe --apply
 ```
 
 First start downloads the model and warms the vLLM cache; subsequent restarts
 reuse `hf-cache/` and `vllm-cache/`.
 
 ```bash
-vllm-stack smoke-test
+infer-stack smoke-test
 ```
 
 If you want a profile that explicitly pins a runtime to a particular GPU, copy
-one of the built-in profile definitions into `~/.config/vllm_service/models.yaml`
+one of the built-in profile definitions into `~/.config/infer_stack/models.yaml`
 and change `providers.vllm.runtimes.<name>.placement.gpu_indices`.
 
 ## Day-to-day workflow
@@ -149,39 +149,39 @@ and change `providers.vllm.runtimes.<name>.placement.gpu_indices`.
 Stop without deleting state:
 
 ```bash
-vllm-stack down
+infer-stack down
 ```
 
 Start after a reboot:
 
 ```bash
-vllm-stack up -d
+infer-stack up -d
 ```
 
 Tail logs and inspect status:
 
 ```bash
-vllm-stack logs
-vllm-stack ps
+infer-stack logs
+infer-stack ps
 ```
 
 Run the smoke test:
 
 ```bash
-vllm-stack smoke-test
+infer-stack smoke-test
 ```
 
 Read the LiteLLM key from `.env`:
 
 ```bash
-vllm-stack env --key LITELLM_MASTER_KEY
+infer-stack env --key LITELLM_MASTER_KEY
 ```
 
 ## Troubleshooting
 
 ### Required host ports are already bound
 
-`vllm-stack up` does a pre-flight check on enabled component ports. For this
+`infer-stack up` does a pre-flight check on enabled component ports. For this
 profile family, the usual ports are 14042 for LiteLLM and 13000 for Open WebUI.
 Direct Ollama profiles may also publish 11434.
 
@@ -195,20 +195,20 @@ docker ps --filter publish=14042
 
 Common fixes:
 
-- Stop the old stack with `vllm-stack down`.
+- Stop the old stack with `infer-stack down`.
 - Stop a stale container, for example `docker stop litellm && docker rm litellm`.
 - Change ports with setup flags such as
-  `vllm-stack setup --litellm-port 14001 --open-webui-port 13001`, then render
+  `infer-stack setup --litellm-port 14001 --open-webui-port 13001`, then render
   and start again.
 
 ### Smoke test errors
 
-- Could not connect: give the stack more time; check `vllm-stack ps`.
+- Could not connect: give the stack more time; check `infer-stack ps`.
 - Connection closed before a response: the router is up but the upstream model
-  may still be loading; inspect `vllm-stack logs vllm-*`.
+  may still be loading; inspect `infer-stack logs vllm-*`.
 - 401/403: the key in `.env` does not match the running LiteLLM container;
-  restart with `vllm-stack down && vllm-stack up -d`.
-- 503: vLLM is still loading; inspect `vllm-stack logs vllm-*`.
+  restart with `infer-stack down && infer-stack up -d`.
+- 503: vLLM is still loading; inspect `infer-stack logs vllm-*`.
 
 ### Wiping state
 
@@ -216,11 +216,11 @@ Delete databases, Open WebUI state, and runtime configs while keeping model
 caches:
 
 ```bash
-vllm-stack purge --yes
+infer-stack purge --yes
 ```
 
 Delete everything, including model caches:
 
 ```bash
-vllm-stack purge --yes --delete-cache
+infer-stack purge --yes --delete-cache
 ```

@@ -8,7 +8,7 @@ Source:
 - Buggy state: any commit in `91b2586..32be174^` (the `depends_on` line
   has existed since the compose template was introduced in 91b2586).
 - Fix commit: 32be174 ("Hot-swap models without dropping Open WebUI") —
-  see `vllm_service/templates/docker-compose.yml.j2`.
+  see `infer_stack/templates/docker-compose.yml.j2`.
 - Conversation: 2026-05-22 entry in `dev/journals/claude.md`.
 
 ### Prompt
@@ -169,7 +169,7 @@ Source:
 - Buggy state: `b844c9f..f0f9197^` (paths.py was introduced in b844c9f
   using `type='cache'` for the data root).
 - Fix commit: f0f9197 ("Default data_root to XDG_DATA_HOME, not
-  XDG_CACHE_HOME") — see `vllm_service/paths.py`.
+  XDG_CACHE_HOME") — see `infer_stack/paths.py`.
 
 ### Prompt
 

@@ -19,9 +19,9 @@ Available out of the box as the built-in profile
 `qwen3.5-122b-a10b-fp8-tp4-4x96`. To skip writing local YAML:
 
 ```bash
-vllm-stack setup --backend compose --profile qwen3.5-122b-a10b-fp8-tp4-4x96
-vllm-stack render --yes
-vllm-stack up -d
+infer-stack setup --backend compose --profile qwen3.5-122b-a10b-fp8-tp4-4x96
+infer-stack render --yes
+infer-stack up -d
 ```
 
 The rest of this recipe walks through the same deployment manually.
@@ -31,7 +31,7 @@ The rest of this recipe walks through the same deployment manually.
 ## 1. Start from the repo root
 
 ```bash
-cd /path/to/vllm_service
+cd /path/to/infer_stack
 ```
 
 Optional sanity check:
@@ -159,7 +159,7 @@ HF_TOKEN=your_token_here
 From the repo root:
 
 ```bash
-vllm-stack up -d
+infer-stack up -d
 ```
 
 ---
@@ -169,7 +169,7 @@ vllm-stack up -d
 Check that the model is exposed:
 
 ```bash
-vllm-stack smoke-test
+infer-stack smoke-test
 ```
 
 You should see:

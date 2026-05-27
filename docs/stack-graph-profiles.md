@@ -39,11 +39,11 @@ it. It does not render LiteLLM, does not render `postgres-litellm`, and does
 not require model declarations.
 
 ```bash
-vllm-stack setup --backend compose --profile ollama-direct
-vllm-stack render --yes --simulate-hardware 2x11
-vllm-stack up -d
+infer-stack setup --backend compose --profile ollama-direct
+infer-stack render --yes --simulate-hardware 2x11
+infer-stack up -d
 
-vllm-stack ollama-pull qwen3.5:4b
+infer-stack ollama-pull qwen3.5:4b
 ```
 
 Rendered shape:
@@ -229,7 +229,7 @@ LiteLLM, or Open WebUI are rejected for `--backend kubeai`.
 ## Configuration files
 
 Custom provider models and stack profiles live in the configured
-`catalog.user_models_file`, which defaults to `~/.config/vllm_service/models.yaml`.
+`catalog.user_models_file`, which defaults to `~/.config/infer_stack/models.yaml`.
 Use provider-specific top-level keys:
 
 ```yaml

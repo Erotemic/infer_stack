@@ -1,6 +1,6 @@
 # CI smoke test
 
-Walks through the canonical `vllm-stack` workflow end-to-end: pick a
+Walks through the canonical `infer-stack` workflow end-to-end: pick a
 profile, render the deployment, inspect the rendered artifacts, and
 exercise a few read-only inspection commands.
 
@@ -19,8 +19,8 @@ All blocks share a single working directory so they build on each
 other within one demo run:
 
 ```text
-$VLLM_SERVICE_CONFIG_DIR  = /tmp/vllm-stack-demo/config
-$VLLM_SERVICE_DATA_DIR    = /tmp/vllm-stack-demo/data
+$INFER_STACK_CONFIG_DIR  = /tmp/infer-stack-demo/config
+$INFER_STACK_DATA_DIR    = /tmp/infer-stack-demo/data
 ```
 
 Each block re-exports those variables at the top — that's required by
@@ -31,20 +31,20 @@ also makes the blocks usable as standalone shell snippets.
 
 Wipe any previous demo state so this run starts fresh.
 
-If a previous run left containers running, use ``vllm-stack purge`` so that
+If a previous run left containers running, use ``infer-stack purge`` so that
 Docker-owned (root-written) directories are removed correctly:
 
 ```bash
-export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
-export VLLM_SERVICE_DATA_DIR=/tmp/vllm-stack-demo/data
-vllm-stack purge --yes --delete-cache 2>/dev/null || true
+export INFER_STACK_CONFIG_DIR=/tmp/infer-stack-demo/config
+export INFER_STACK_DATA_DIR=/tmp/infer-stack-demo/data
+infer-stack purge --yes --delete-cache 2>/dev/null || true
 ```
 
 Then recreate the empty directories:
 
 ```bash
-rm -rf /tmp/vllm-stack-demo
-mkdir -p /tmp/vllm-stack-demo/config /tmp/vllm-stack-demo/data
+rm -rf /tmp/infer-stack-demo
+mkdir -p /tmp/infer-stack-demo/config /tmp/infer-stack-demo/data
 ```
 
 ## 2. Set up a profile
@@ -55,14 +55,14 @@ on a single GPU) and write a config for it. This demo exercises the classic
 ``docs/demos/ollama_direct_quickstart.md`` for the no-LiteLLM Ollama path:
 
 ```bash
-export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
-export VLLM_SERVICE_DATA_DIR=/tmp/vllm-stack-demo/data
-vllm-stack setup --backend compose --profile test-single-11gb
+export INFER_STACK_CONFIG_DIR=/tmp/infer-stack-demo/config
+export INFER_STACK_DATA_DIR=/tmp/infer-stack-demo/data
+infer-stack setup --backend compose --profile test-single-11gb
 ```
 
 You should see ``Wrote …/config.yaml`` and a summary of the configured
 backend / active profile. After this, ``config.yaml`` exists under
-``$VLLM_SERVICE_CONFIG_DIR``. A ``models.yaml`` file is only needed when you
+``$INFER_STACK_CONFIG_DIR``. A ``models.yaml`` file is only needed when you
 add local ``vllm_models``, ``ollama_models``, or custom stack profiles.
 
 ## 3. List the catalog
@@ -70,9 +70,9 @@ add local ``vllm_models``, ``ollama_models``, or custom stack profiles.
 What profiles are available?
 
 ```bash
-export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
-export VLLM_SERVICE_DATA_DIR=/tmp/vllm-stack-demo/data
-vllm-stack list-profiles | head -20
+export INFER_STACK_CONFIG_DIR=/tmp/infer-stack-demo/config
+export INFER_STACK_DATA_DIR=/tmp/infer-stack-demo/data
+infer-stack list-profiles | head -20
 ```
 
 ## 4. Inspect a single profile
@@ -82,9 +82,9 @@ served model name, endpoint shape, transport details — without
 rendering anything yet:
 
 ```bash
-export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
-export VLLM_SERVICE_DATA_DIR=/tmp/vllm-stack-demo/data
-vllm-stack describe-profile test-single-11gb --format yaml --simulate-hardware 1x24 | head -30
+export INFER_STACK_CONFIG_DIR=/tmp/infer-stack-demo/config
+export INFER_STACK_DATA_DIR=/tmp/infer-stack-demo/data
+infer-stack describe-profile test-single-11gb --format yaml --simulate-hardware 1x24 | head -30
 ```
 
 The ``--simulate-hardware`` flag pretends this host has the requested
@@ -98,9 +98,9 @@ non-zero if the resolved deployment has errors. It writes ``plan.yaml``
 as a side effect so subsequent ``render`` calls see a consistent plan.
 
 ```bash
-export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
-export VLLM_SERVICE_DATA_DIR=/tmp/vllm-stack-demo/data
-vllm-stack validate --simulate-hardware 1x24
+export INFER_STACK_CONFIG_DIR=/tmp/infer-stack-demo/config
+export INFER_STACK_DATA_DIR=/tmp/infer-stack-demo/data
+infer-stack validate --simulate-hardware 1x24
 ```
 
 A clean run prints ``"ok": true`` with empty ``errors`` and
@@ -113,17 +113,17 @@ mounted-runtime files. ``--yes`` skips the interactive per-file
 confirmation diff (which you want for scripted use).
 
 ```bash
-export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
-export VLLM_SERVICE_DATA_DIR=/tmp/vllm-stack-demo/data
-vllm-stack render --yes --simulate-hardware 1x24
+export INFER_STACK_CONFIG_DIR=/tmp/infer-stack-demo/config
+export INFER_STACK_DATA_DIR=/tmp/infer-stack-demo/data
+infer-stack render --yes --simulate-hardware 1x24
 ```
 
 You can confirm the artifacts landed where you expect:
 
 ```bash
-test -f /tmp/vllm-stack-demo/data/generated/docker-compose.yml
-test -f /tmp/vllm-stack-demo/data/generated/.env
-test -f /tmp/vllm-stack-demo/data/generated/plan.yaml
+test -f /tmp/infer-stack-demo/data/generated/docker-compose.yml
+test -f /tmp/infer-stack-demo/data/generated/.env
+test -f /tmp/infer-stack-demo/data/generated/plan.yaml
 ```
 
 ## 7. Constrain placement to specific GPU indices
@@ -132,14 +132,14 @@ If GPU 0 is already in use, you can ask the planner to consider only
 other GPUs without editing any profile:
 
 ```bash
-export VLLM_SERVICE_CONFIG_DIR=/tmp/vllm-stack-demo/config
-export VLLM_SERVICE_DATA_DIR=/tmp/vllm-stack-demo/data
-vllm-stack render --yes --simulate-hardware 4x24 --allowed-gpus 1
-grep -A1 device_ids /tmp/vllm-stack-demo/data/generated/docker-compose.yml | head -3
+export INFER_STACK_CONFIG_DIR=/tmp/infer-stack-demo/config
+export INFER_STACK_DATA_DIR=/tmp/infer-stack-demo/data
+infer-stack render --yes --simulate-hardware 4x24 --allowed-gpus 1
+grep -A1 device_ids /tmp/infer-stack-demo/data/generated/docker-compose.yml | head -3
 ```
 
 The rendered ``device_ids`` for the vLLM container now pins to GPU 1.
-``VLLM_SERVICE_ALLOWED_GPUS=1,3`` works as an env-var equivalent.
+``INFER_STACK_ALLOWED_GPUS=1,3`` works as an env-var equivalent.
 
 ## 8. Programmatic API
 
@@ -149,10 +149,10 @@ semantics without spawning a subprocess:
 
 ```python
 import os, tempfile
-os.environ["VLLM_SERVICE_CONFIG_DIR"] = "/tmp/vllm-stack-demo/config"
-os.environ["VLLM_SERVICE_DATA_DIR"] = "/tmp/vllm-stack-demo/data"
+os.environ["INFER_STACK_CONFIG_DIR"] = "/tmp/infer-stack-demo/config"
+os.environ["INFER_STACK_DATA_DIR"] = "/tmp/infer-stack-demo/data"
 
-from vllm_service.cli import ListProfilesCLI, ValidateCLI
+from infer_stack.cli import ListProfilesCLI, ValidateCLI
 
 # ListProfilesCLI prints to stdout; capture or just verify it runs.
 ListProfilesCLI.main(argv=False)
@@ -167,25 +167,25 @@ assert rv == 0, f"validate returned {rv}"
 Stop the stack and delete all Docker-written state (postgres data, caches, etc.):
 
 ```bash
-vllm-stack purge --yes
+infer-stack purge --yes
 ```
 
 Model weights in hf-cache and vllm-cache are preserved by default so a
 subsequent run doesn't need to re-download them. Pass ``--delete-cache`` to
 also wipe those directories.
 
-Afterwards the ``/tmp/vllm-stack-demo`` directory can be removed normally:
+Afterwards the ``/tmp/infer-stack-demo`` directory can be removed normally:
 
 ```bash
-rm -rf /tmp/vllm-stack-demo
+rm -rf /tmp/infer-stack-demo
 ```
 
 ## Where to go next
 
-- ``vllm-stack up`` actually starts the compose stack (needs Docker
+- ``infer-stack up`` actually starts the compose stack (needs Docker
   and real GPU access). Try it with one of the ``*-single`` profiles
   on a workstation.
-- ``vllm-stack switch <profile> --apply`` swaps the active profile
+- ``infer-stack switch <profile> --apply`` swaps the active profile
   on a running stack.
 - The hardware-shape integration profiles are named ``test-*``: pick
   ``test-single-11gb`` for a workstation card or ``test-multi-gpu``
@@ -194,8 +194,8 @@ rm -rf /tmp/vllm-stack-demo
 
 ## Readiness vs Docker health
 
-Use `vllm-stack wait-ready` when a test must wait until the active model can
+Use `infer-stack wait-ready` when a test must wait until the active model can
 actually serve a request. Compose health can become true before a routed vLLM
-model is ready through LiteLLM. `vllm-stack smoke-test` runs this readiness
+model is ready through LiteLLM. `infer-stack smoke-test` runs this readiness
 probe by default; pass `--no-wait` only when you intentionally want to test the
 currently listening endpoint without waiting for model readiness.

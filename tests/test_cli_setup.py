@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from vllm_service import cli as cli_mod
+from infer_stack import cli as cli_mod
 
 
 MANAGE_PY = Path(__file__).resolve().parents[1] / "manage.py"
@@ -22,8 +22,8 @@ def _anchor_paths(tmp_path: Path, monkeypatch) -> Path:
     see the same layout as the subprocess ones launched via ``run_cli``.
     ``monkeypatch.setenv`` auto-restores at test teardown.
     """
-    monkeypatch.setenv("VLLM_SERVICE_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("VLLM_SERVICE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFER_STACK_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFER_STACK_DATA_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -31,8 +31,8 @@ def run_cli(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> su
     full_env = os.environ.copy()
     # Anchor config + rendered artifacts under tmp_path so tests are
     # independent of the user's ~/.config and ~/.cache directories.
-    full_env.setdefault("VLLM_SERVICE_CONFIG_DIR", str(tmp_path))
-    full_env.setdefault("VLLM_SERVICE_DATA_DIR", str(tmp_path))
+    full_env.setdefault("INFER_STACK_CONFIG_DIR", str(tmp_path))
+    full_env.setdefault("INFER_STACK_DATA_DIR", str(tmp_path))
     if env:
         full_env.update(env)
     return subprocess.run(
@@ -157,11 +157,11 @@ def test_setup_supports_environment_fallbacks(tmp_path: Path) -> None:
         tmp_path,
         "setup",
         env={
-            "VLLM_SERVICE_BACKEND": "kubeai",
-            "VLLM_SERVICE_PROFILE": "gpt-oss-20b-chat",
-            "VLLM_SERVICE_NAMESPACE": "env-ns",
-            "VLLM_SERVICE_INGRESS_ENABLED": "true",
-            "VLLM_SERVICE_INGRESS_HOST": "env.example.test",
+            "INFER_STACK_BACKEND": "kubeai",
+            "INFER_STACK_PROFILE": "gpt-oss-20b-chat",
+            "INFER_STACK_NAMESPACE": "env-ns",
+            "INFER_STACK_INGRESS_ENABLED": "true",
+            "INFER_STACK_INGRESS_HOST": "env.example.test",
         },
     )
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
@@ -367,7 +367,7 @@ def test_switch_apply_compose_recreates_router_when_config_changes(
     def fake_run(cmd: list[str]) -> None:
         invocations.append(list(cmd))
 
-    import vllm_service.docker_utils as du
+    import infer_stack.docker_utils as du
     monkeypatch.setattr(du, "run", fake_run)
 
     cli_mod.SwitchCLI.main(
@@ -419,7 +419,7 @@ def test_openwebui_state_paths_are_not_deleted_or_reinitialized_on_switch(
     def fake_run(cmd: list[str]) -> None:
         invocations.append(list(cmd))
 
-    import vllm_service.docker_utils as du
+    import infer_stack.docker_utils as du
     monkeypatch.setattr(du, "run", fake_run)
 
     cli_mod.SwitchCLI.main(

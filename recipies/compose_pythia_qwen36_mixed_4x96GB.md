@@ -23,7 +23,7 @@ from Open WebUI are translated into upstream `/v1/completions` calls.
 ## 1. Setup, render, run
 
 ```bash
-cd /path/to/vllm_service
+cd /path/to/infer_stack
 python manage.py setup --backend compose --profile pythia-qwen3.6-mixed-4x96
 python manage.py render
 python manage.py up -d
@@ -63,14 +63,14 @@ fields) without disturbing any of the running vLLM containers:
 ```bash
 python manage.py render
 
-vllm-stack restart litellm
+infer-stack restart litellm
 ```
 
 `--no-deps` keeps `vllm-qwen36-35b`, `vllm-pythia-69b`, and
 `vllm-pythia-28b` running. Confirm with:
 
 ```bash
-vllm-stack ps
+infer-stack ps
 ```
 
 Avoid `docker compose down`, `down -v`, or a profile-wide
@@ -84,7 +84,7 @@ active use — re-render and recreate only the Qwen vLLM service:
 
 ```bash
 python manage.py render
-vllm-stack restart vllm-qwen36-35b
+infer-stack restart vllm-qwen36-35b
 ```
 
 `--no-deps` prevents Compose from touching `postgres-litellm`,
@@ -92,7 +92,7 @@ vllm-stack restart vllm-qwen36-35b
 services. To confirm the rendered service name first:
 
 ```bash
-vllm-stack ps
+infer-stack ps
 ```
 
 Avoid `docker compose down`, `down -v`, or a profile-wide
@@ -140,7 +140,7 @@ Edit `generated/.env` and set `HF_TOKEN=...`. Unknown `.env` keys
 ## 3. Verify the routes
 
 ```bash
-eval "$(vllm-stack env --export)"
+eval "$(infer-stack env --export)"
 curl -s http://127.0.0.1:14042/v1/models \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" | jq '.data[].id'
 ```

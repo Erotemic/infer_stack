@@ -5,15 +5,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from vllm_service.backends.compose_renderer import render_compose_artifacts
-from vllm_service.backends.kubeai_renderer import render_kubeai_artifacts
-from vllm_service.config import initial_config
-from vllm_service.config import save_yaml
-from vllm_service.contracts import build_profile_contract, load_profile_contract
-from vllm_service.hardware import simulate_inventory
-from vllm_service.paths import set_config_root, set_data_root
-from vllm_service.resolver import resolve
-from vllm_service.validator import validate_resolved
+from infer_stack.backends.compose_renderer import render_compose_artifacts
+from infer_stack.backends.kubeai_renderer import render_kubeai_artifacts
+from infer_stack.config import initial_config
+from infer_stack.config import save_yaml
+from infer_stack.contracts import build_profile_contract, load_profile_contract
+from infer_stack.hardware import simulate_inventory
+from infer_stack.paths import set_config_root, set_data_root
+from infer_stack.resolver import resolve
+from infer_stack.validator import validate_resolved
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +81,7 @@ def test_kubeai_render_uses_profile_identity(tmp_path: Path) -> None:
     render_kubeai_artifacts({"deployment": deployment})
     models = list(yaml.safe_load_all((tmp_path / "generated" / "kubeai" / "models.yaml").read_text()))
     assert models[0]["metadata"]["name"] == "qwen2-72b-instruct-tp2-balanced"
-    assert models[0]["metadata"]["annotations"]["vllm-service/logical-model-name"] == "qwen/qwen2-72b-instruct"
+    assert models[0]["metadata"]["annotations"]["infer-stack/logical-model-name"] == "qwen/qwen2-72b-instruct"
     assert models[0]["spec"]["resourceProfile"] == "gpu-tp2-balanced:2"
     assert "--tensor-parallel-size=2" in models[0]["spec"]["args"]
     assert "--served-model-name=qwen2-72b-instruct-tp2-balanced" in models[0]["spec"]["args"]
@@ -92,7 +92,7 @@ def test_compose_render_includes_profile_labels_and_aliases(tmp_path: Path) -> N
     render_compose_artifacts({"deployment": deployment})
     compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
     litellm_text = (tmp_path / "state" / "runtime" / "litellm_config.yaml").read_text()
-    assert 'vllm_service.public_name: "gpt-oss-20b-chat"' in compose_text
+    assert 'infer_stack.public_name: "gpt-oss-20b-chat"' in compose_text
     assert "openai/gpt-oss-20b" in litellm_text
     assert "gpt-oss-20b-chat" in litellm_text
 
@@ -242,7 +242,7 @@ def test_helm_pythia_profiles_render_as_completions(tmp_path: Path) -> None:
         deployment = _deployment(tmp_path, profile_name, inventory="1x96")
         render_compose_artifacts({"deployment": deployment})
         compose_text = (tmp_path / "generated" / "docker-compose.yml").read_text()
-        assert 'vllm_service.protocol_mode: "completions"' in compose_text, profile_name
+        assert 'infer_stack.protocol_mode: "completions"' in compose_text, profile_name
         assert deployment["services"][0]["protocol_mode"] == "completions", profile_name
 
 
@@ -253,7 +253,7 @@ def test_helm_base_model_profiles_render_as_completions(tmp_path: Path) -> None:
 
 
 def test_validation_rejects_chat_protocol_for_completions_only_model(tmp_path: Path) -> None:
-    from vllm_service.config import initial_config
+    from infer_stack.config import initial_config
 
     cfg = initial_config()
     cfg["backend"] = "compose"
@@ -329,7 +329,7 @@ def test_pythia_routing_end_to_end_unit_check(tmp_path: Path) -> None:
     cfg_doc = yaml.safe_load(litellm_text)
 
     # Compose label.
-    assert 'vllm_service.protocol_mode: "completions"' in compose_text
+    assert 'infer_stack.protocol_mode: "completions"' in compose_text
     # LiteLLM provider.
     pythia_entry = next(m for m in cfg_doc["model_list"] if m["model_name"] == "eleutherai/pythia-6.9b")
     assert pythia_entry["litellm_params"]["model"] == "text-completion-openai/eleutherai/pythia-6.9b"
@@ -445,8 +445,8 @@ def test_mixed_profile_compose_service_names_are_stable(tmp_path: Path) -> None:
     deployment = _deployment(tmp_path, "pythia-qwen3.6-mixed-4x96", inventory="4x96")
     render_compose_artifacts({"deployment": deployment})
     blocks = _split_compose_blocks((tmp_path / "generated" / "docker-compose.yml").read_text())
-    vllm_services = sorted(name for name in blocks if name.startswith("vllm-"))
-    assert vllm_services == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
+    infer_stacks = sorted(name for name in blocks if name.startswith("vllm-"))
+    assert infer_stacks == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
 
 
 def test_default_pythia_profiles_have_no_chat_compat(tmp_path: Path) -> None:
@@ -634,8 +634,8 @@ def test_pythia_qwen3_6_mixed_profile_renders_compose_and_litellm(tmp_path: Path
     blocks = _split_compose_blocks(compose_text)
 
     # Three vLLM services and two Postgres services.
-    vllm_services = [name for name in blocks if name.startswith("vllm-")]
-    assert sorted(vllm_services) == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
+    infer_stacks = [name for name in blocks if name.startswith("vllm-")]
+    assert sorted(infer_stacks) == ["vllm-pythia-28b", "vllm-pythia-69b", "vllm-qwen36-35b"]
     assert "postgres-open-webui" in blocks
     assert "postgres-litellm" in blocks
     assert "postgres-init" not in blocks
@@ -678,7 +678,7 @@ def test_qwen3_6_dual_tp2_4x96_profile_resolves_and_renders(tmp_path: Path) -> N
 
 
 def test_kubeai_protocol_validation_applies(tmp_path: Path) -> None:
-    from vllm_service.config import initial_config
+    from infer_stack.config import initial_config
 
     cfg = initial_config()
     cfg["backend"] = "kubeai"
@@ -723,7 +723,7 @@ def test_load_profile_contract_uses_public_loader_for_gpt_oss_variants(tmp_path:
     assert chat["services"][0]["protocol"]["mode"] == "chat"
 
 
-def test_compose_vllm_service_persists_caches_and_uses_host_ipc(tmp_path: Path) -> None:
+def test_compose_infer_stack_persists_caches_and_uses_host_ipc(tmp_path: Path) -> None:
     """Warm-restart caches and shared memory must be wired into every vLLM service.
 
     - Hugging Face cache mount (existing behaviour) avoids re-downloading weights.
@@ -748,7 +748,7 @@ def test_compose_vllm_service_persists_caches_and_uses_host_ipc(tmp_path: Path) 
         assert "ipc: host" in body, name
 
 
-def test_compose_non_vllm_services_do_not_get_vllm_cache_mount(tmp_path: Path) -> None:
+def test_compose_non_infer_stacks_do_not_get_vllm_cache_mount(tmp_path: Path) -> None:
     """The vLLM cache mount and host IPC must not leak into Postgres / litellm / open-webui."""
     deployment = _deployment(tmp_path, "gpt-oss-20b-chat")
     render_compose_artifacts({"deployment": deployment})
@@ -762,7 +762,7 @@ def test_compose_non_vllm_services_do_not_get_vllm_cache_mount(tmp_path: Path) -
 
 
 def test_default_state_paths_include_vllm_cache(tmp_path: Path) -> None:
-    from vllm_service.config import default_state_paths, normalized_state
+    from infer_stack.config import default_state_paths, normalized_state
 
     # data_root() is pinned to tmp_path by the autouse fixture.
     paths = default_state_paths()
@@ -781,7 +781,7 @@ def test_allowed_gpus_filters_inventory_to_real_indices(tmp_path: Path) -> None:
     compose stack pins ``device_ids`` to those physical indices (no
     renumbering).
     """
-    from vllm_service.cli import effective_inventory
+    from infer_stack.cli import effective_inventory
 
     inv = effective_inventory({"simulate_hardware": "4x24", "allowed_gpus": "1,3"})
     assert inv is not None
@@ -805,7 +805,7 @@ def test_allowed_gpus_filters_inventory_to_real_indices(tmp_path: Path) -> None:
 
 def test_allowed_gpus_too_few_for_profile_surfaces_placement_error(tmp_path: Path) -> None:
     """Asking for 2-GPU placement when only 1 GPU is allowed must fail validation cleanly."""
-    from vllm_service.cli import effective_inventory
+    from infer_stack.cli import effective_inventory
 
     inv = effective_inventory({"simulate_hardware": "4x24", "allowed_gpus": "1"})
     assert inv is not None and inv["gpu_count"] == 1
@@ -862,7 +862,7 @@ def test_openwebui_auth_can_be_enabled_via_config(tmp_path: Path) -> None:
 
 
 def test_normalized_output_anchors_relative_paths_on_data_root(tmp_path: Path) -> None:
-    from vllm_service.config import normalized_output
+    from infer_stack.config import normalized_output
 
     # data_root() is pinned to tmp_path by the autouse fixture.
     normalized = normalized_output({"generated_dir": "out"})

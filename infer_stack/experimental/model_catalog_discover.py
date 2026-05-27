@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Standalone CLI to discover Hugging Face model metadata and append new model
-entries into a vllm_service-style models.yaml manifest.
+entries into a infer_stack-style models.yaml manifest.
 
 Highlights
 ----------
@@ -779,7 +779,7 @@ def _add_refresh_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Discover Hugging Face model metadata and append conservative vllm_service-compatible model entries.")
+    parser = argparse.ArgumentParser(description="Discover Hugging Face model metadata and append conservative infer_stack-compatible model entries.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {PROGRAM_VERSION}")
     _add_refresh_args(parser)
     sub = parser.add_subparsers(dest="command")

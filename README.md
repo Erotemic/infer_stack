@@ -1,6 +1,6 @@
-# vLLM Service
+# Infer Stack
 
-`vllm_service` manages **named stack profiles** for local and Kubernetes-backed inference.
+`infer_stack` manages **named stack profiles** for local and Kubernetes-backed inference.
 
 A stack profile is a small graph made from:
 
@@ -19,17 +19,17 @@ The direct Ollama path can run without LiteLLM and without predeclaring models. 
 ## Main commands
 
 ```bash
-vllm-stack setup --backend compose --profile ollama-direct
-# or: vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
-vllm-stack list-profiles
-vllm-stack describe-profile <profile>
-vllm-stack validate
-vllm-stack render
-vllm-stack up -d
-vllm-stack deploy
-vllm-stack switch <profile> --apply  # re-render and converge; no separate up needed
-vllm-stack status
-vllm-stack smoke-test
+infer-stack setup --backend compose --profile ollama-direct
+# or: infer-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
+infer-stack list-profiles
+infer-stack describe-profile <profile>
+infer-stack validate
+infer-stack render
+infer-stack up -d
+infer-stack deploy
+infer-stack switch <profile> --apply  # re-render and converge; no separate up needed
+infer-stack status
+infer-stack smoke-test
 ```
 
 The CLI is built on [`scriptconfig`](https://gitlab.kitware.com/utils/scriptconfig),
@@ -37,45 +37,45 @@ so every subcommand is also importable as a Python class — useful for
 notebooks, tests, and other scripts:
 
 ```python
-from vllm_service.cli import RenderCLI, SmokeTestCLI
+from infer_stack.cli import RenderCLI, SmokeTestCLI
 
 RenderCLI.main(argv=False, profile="qwen2-5-7b-instruct-turbo-default", yes=True)
 SmokeTestCLI.main(argv=False, model="qwen/qwen2.5-7b-instruct-turbo")
 ```
 
-`manage.py` and `vllm-stack` are aliases for the same entry point;
-shell examples below use `vllm-stack`.
+`manage.py` and `infer-stack` are aliases for the same entry point;
+shell examples below use `infer-stack`.
 
 ## Operating the rendered Compose stack
 
 Once the stack is up, common docker compose operations are available as
-`vllm-stack` subcommands so you don't have to `cd` into the rendered
+`infer-stack` subcommands so you don't have to `cd` into the rendered
 output directory or repeat the `-f docker-compose.yml --env-file .env`
 flags. They all resolve the rendered location via the same
 `output.generated_dir` chain as the rest of the CLI.
 
 ```bash
-vllm-stack ps                              # docker compose ps
-vllm-stack ps -a                           # include stopped
-vllm-stack logs -f open-webui              # follow one service
-vllm-stack logs --tail=200 litellm vllm-*  # tailored backlog
-vllm-stack restart open-webui              # restart specific services
-vllm-stack stop                            # stop everything (no remove)
-vllm-stack start                           # start back up
-vllm-stack pull                            # refresh images
+infer-stack ps                              # docker compose ps
+infer-stack ps -a                           # include stopped
+infer-stack logs -f open-webui              # follow one service
+infer-stack logs --tail=200 litellm vllm-*  # tailored backlog
+infer-stack restart open-webui              # restart specific services
+infer-stack stop                            # stop everything (no remove)
+infer-stack start                           # start back up
+infer-stack pull                            # refresh images
 ```
 
 For Ollama model management inside the rendered Ollama service, prefer the
 CLI wrappers:
 
 ```bash
-vllm-stack ollama-pull smollm2:135m
-vllm-stack ollama-list
-vllm-stack ollama-ps
+infer-stack ollama-pull smollm2:135m
+infer-stack ollama-list
+infer-stack ollama-ps
 ```
 
 For other interactive one-shot commands inside a container, use
-`vllm-stack logs`, `vllm-stack ps`, `vllm-stack restart`, or fall back to raw
+`infer-stack logs`, `infer-stack ps`, `infer-stack restart`, or fall back to raw
 Compose only when no wrapper exists.
 
 On the KubeAI backend these wrappers raise ``NotImplementedError`` —
@@ -84,7 +84,7 @@ use the equivalent ``kubectl`` commands in the meantime.
 ## Inspect a profile before running it
 
 ```bash
-vllm-stack describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
+infer-stack describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
 ```
 
 ## Stack profile model
@@ -101,7 +101,7 @@ Open WebUI -> LiteLLM -> Ollama + vLLM       # mixed migration / test stacks
 Ollama API + vLLM API directly               # raw backend profiles
 ```
 
-Custom provider models and custom profiles live in the configured `catalog.user_models_file`, which defaults to `~/.config/vllm_service/models.yaml`. New files should prefer provider-specific top-level keys:
+Custom provider models and custom profiles live in the configured `catalog.user_models_file`, which defaults to `~/.config/infer_stack/models.yaml`. New files should prefer provider-specific top-level keys:
 
 ```yaml
 vllm_models:
@@ -124,21 +124,21 @@ profiles:
 
 ## Where config and rendered artifacts live
 
-`vllm-stack` follows XDG basedir conventions, so where you invoke it
+`infer-stack` follows XDG basedir conventions, so where you invoke it
 from never changes which config it reads or where it writes rendered
 artifacts:
 
 | What | Default location | Override |
 | --- | --- | --- |
-| `config.yaml`, `models.yaml`, `kubeai-values.local.yaml` | `~/.config/vllm_service/` (resp. `$XDG_CONFIG_HOME`) | `VLLM_SERVICE_CONFIG_DIR` env var, or `--config-dir` |
-| Rendered `generated/` (docker-compose.yml, plan.yaml, kubeai/*) and `state/` (hf-cache, postgres volumes, bind mounts) | `~/.local/share/vllm_service/` (resp. `$XDG_DATA_HOME`) | `VLLM_SERVICE_DATA_DIR` env var, or `--data-dir` |
+| `config.yaml`, `models.yaml`, `kubeai-values.local.yaml` | `~/.config/infer_stack/` (resp. `$XDG_CONFIG_HOME`) | `INFER_STACK_CONFIG_DIR` env var, or `--config-dir` |
+| Rendered `generated/` (docker-compose.yml, plan.yaml, kubeai/*) and `state/` (hf-cache, postgres volumes, bind mounts) | `~/.local/share/infer_stack/` (resp. `$XDG_DATA_HOME`) | `INFER_STACK_DATA_DIR` env var, or `--data-dir` |
 
 Per-knob overrides still apply on top:
 
-* `--generated-dir /path/to/out` (or `VLLM_SERVICE_GENERATED_DIR`, or
+* `--generated-dir /path/to/out` (or `INFER_STACK_GENERATED_DIR`, or
   `output.generated_dir` in `config.yaml`) only moves the rendered
   artifacts.
-* `--state-root /path` (or `VLLM_SERVICE_STATE_ROOT`) moves all
+* `--state-root /path` (or `INFER_STACK_STATE_ROOT`) moves all
   `state.*` paths together. Individual `state.runtime` etc. can be
   overridden in `config.yaml`.
 
@@ -146,13 +146,13 @@ Examples:
 
 ```bash
 # Point at a checkout-local config for ad-hoc experiments.
-VLLM_SERVICE_CONFIG_DIR=$PWD vllm-stack setup --backend compose --profile <p>
+INFER_STACK_CONFIG_DIR=$PWD infer-stack setup --backend compose --profile <p>
 
 # Send rendered artifacts somewhere other than ~/.cache.
-vllm-stack render --data-dir /srv/vllm-stack
+infer-stack render --data-dir /srv/infer-stack
 
 # Or just the rendered output, leaving state/ in the cache dir.
-vllm-stack render --generated-dir /tmp/scratch-out
+infer-stack render --generated-dir /tmp/scratch-out
 ```
 
 `--config-dir` / `--data-dir` are per-subcommand flags (they live on
@@ -166,13 +166,13 @@ If some of your GPUs are tied up by other work, restrict the planner
 
 ```bash
 # Only place onto GPU 1 (e.g. GPU 0 is running a display).
-vllm-stack render --yes --profile test-single-11gb --allowed-gpus 1
+infer-stack render --yes --profile test-single-11gb --allowed-gpus 1
 
 # Or pin a TP=2 profile to physical GPUs 1 and 3.
-vllm-stack render --yes --profile test-multi-gpu --allowed-gpus 1,3
+infer-stack render --yes --profile test-multi-gpu --allowed-gpus 1,3
 ```
 
-``--allowed-gpus`` (or ``VLLM_SERVICE_ALLOWED_GPUS=1,3``) filters the
+``--allowed-gpus`` (or ``INFER_STACK_ALLOWED_GPUS=1,3``) filters the
 detected inventory before placement — real indices are preserved, so
 the rendered compose stack pins ``device_ids: ["1", "3"]`` to those
 exact physical GPUs. Useful for integration tests that need to share a
@@ -213,16 +213,16 @@ Prerequisite: Docker and the `docker compose` plugin must be installed.
 
 ```bash
 # Direct Ollama, no LiteLLM and no predeclared models.
-vllm-stack setup --backend compose --profile ollama-direct
-vllm-stack validate --simulate-hardware 2x11
-vllm-stack render --yes --simulate-hardware 2x11
-vllm-stack up -d
+infer-stack setup --backend compose --profile ollama-direct
+infer-stack validate --simulate-hardware 2x11
+infer-stack render --yes --simulate-hardware 2x11
+infer-stack up -d
 
 # Classic vLLM through LiteLLM/Open WebUI.
-vllm-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
-vllm-stack validate
-vllm-stack render
-vllm-stack up -d
+infer-stack setup --backend compose --profile qwen2-5-7b-instruct-turbo-default
+infer-stack validate
+infer-stack render
+infer-stack up -d
 ```
 
 ### Test that it is responding
@@ -245,7 +245,7 @@ unless you changed the relevant ports in config.
 Wait until the active profile can serve a real request through its resolved default endpoint:
 
 ```bash
-vllm-stack wait-ready
+infer-stack wait-ready
 ```
 
 `wait-ready` is stronger than Docker Compose health: it probes the user-facing
@@ -254,15 +254,15 @@ generation/completion to succeed. The smoke test runs this readiness probe by
 default before issuing its normal test request:
 
 ```bash
-vllm-stack smoke-test
+infer-stack smoke-test
 ```
 
 For direct Ollama profiles, pull a model first and then smoke-test that model:
 
 ```bash
-vllm-stack ollama-pull qwen3.5:4b
-vllm-stack ollama-list
-vllm-stack smoke-test --model qwen3.5:4b
+infer-stack ollama-pull qwen3.5:4b
+infer-stack ollama-list
+infer-stack smoke-test --model qwen3.5:4b
 ```
 
 For LiteLLM profiles, `smoke-test` reads the rendered `.env` automatically and
@@ -270,20 +270,20 @@ uses the active profile's resolved OpenAI-compatible front door. You can inspect
 individual secrets when needed:
 
 ```bash
-vllm-stack env LITELLM_MASTER_KEY
-vllm-stack env VLLM_BACKEND_API_KEY
+infer-stack env LITELLM_MASTER_KEY
+infer-stack env VLLM_BACKEND_API_KEY
 ```
 
 When you intentionally want the old quick behavior, skip the readiness wait:
 
 ```bash
-vllm-stack smoke-test --no-wait --model gpt2
+infer-stack smoke-test --no-wait --model gpt2
 ```
 
 ### Stop it
 
 ```bash
-vllm-stack down
+infer-stack down
 ```
 
 `down` never removes named volumes. The Postgres data directory and the
@@ -325,14 +325,14 @@ container names. Use only the services rendered by the active profile:
 
 ```bash
 # LiteLLM gateway profile
-vllm-stack logs -f litellm
+infer-stack logs -f litellm
 
 # Direct Ollama profile
-vllm-stack logs -f ollama
+infer-stack logs -f ollama
 
 # Ollama model store helpers
-vllm-stack ollama-list
-vllm-stack ollama-ps
+infer-stack ollama-list
+infer-stack ollama-ps
 ```
 
 You do not need to delete any volume during normal operation. If you
@@ -351,11 +351,11 @@ of existing lines are preserved where practical.
 ### Switching profiles
 
 ```bash
-vllm-stack switch <profile> --apply
+infer-stack switch <profile> --apply
 ```
 
 `switch --apply` re-renders from the updated `config.yaml`, then brings the
-stack up convergently with `--remove-orphans` so a separate `vllm-stack up` is
+stack up convergently with `--remove-orphans` so a separate `infer-stack up` is
 not needed. Components/runtimes that are no longer in the rendered compose file
 are dropped. Compose preserves existing containers whose service definitions did
 not change. For vLLM-to-vLLM profile switches, unchanged Open WebUI stays up;
@@ -374,7 +374,7 @@ Switches that change Open WebUI's provider wiring, such as
 Open WebUI because its environment changes. Postgres volumes and provider
 caches are left untouched. vLLM runtime containers are named after their
 Compose service, for example `vllm-chat`, so `docker ps` and
-`vllm-stack logs vllm-chat` clearly identify them as vLLM containers.
+`infer-stack logs vllm-chat` clearly identify them as vLLM containers.
 
 ### Protocol modes for base vs. instruct models
 
@@ -428,8 +428,8 @@ restarted, no `--chat-template` is rendered, and the adapter takes
 effect after a `litellm`-only restart:
 
 ```bash
-vllm-stack render
-vllm-stack restart litellm
+infer-stack render
+infer-stack restart litellm
 ```
 
 The built-in `pythia-inspect-mmlu-compat` profile is a ready-made
@@ -464,12 +464,12 @@ streamed response. To test reasoning end-to-end:
 
 ```bash
 # Non-streaming CLI smoke test:
-vllm-stack smoke-test \
+infer-stack smoke-test \
   --model qwen3.6-35b-a3b \
   --prompt "Think step by step: 17*23"
 
 # For streaming inspection, read the key with the CLI wrapper:
-LITELLM_MASTER_KEY=$(vllm-stack env LITELLM_MASTER_KEY)
+LITELLM_MASTER_KEY=$(infer-stack env LITELLM_MASTER_KEY)
 curl -N http://127.0.0.1:14042/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'Content-Type: application/json' \
@@ -488,7 +488,7 @@ Use KubeAI when you want Kubernetes-managed serving.
 
 ### Important rules
 
-1. **Use the same namespace everywhere.** The namespace in `vllm-stack setup --namespace ...` must match the namespace where the KubeAI Helm release already exists.
+1. **Use the same namespace everywhere.** The namespace in `infer-stack setup --namespace ...` must match the namespace where the KubeAI Helm release already exists.
 2. **Prefer the repo-driven path.** The normal path is `setup` -> `validate` -> `render` -> `deploy` -> `status`.
 3. **`kubectl port-forward` stays in the foreground.** Leave it running in one terminal and send requests from another.
 4. **The first request can take a while.** `/openai/v1/models` may work before chat completions work. The first completion may trigger pod creation, image pull, model load, and compile warmup.
@@ -646,7 +646,7 @@ cat values-kubeai-local-gpu.yaml
 Sync that file so `validate` and `render` use the same local resource-profile data:
 
 ```bash
-vllm-stack kubeai-sync-resource-profiles --from-file values-kubeai-local-gpu.yaml
+infer-stack kubeai-sync-resource-profiles --from-file values-kubeai-local-gpu.yaml
 ```
 
 ---
@@ -656,17 +656,17 @@ vllm-stack kubeai-sync-resource-profiles --from-file values-kubeai-local-gpu.yam
 Use this example on a 1-GPU workstation.
 
 ```bash
-vllm-stack setup \
+infer-stack setup \
   --backend kubeai \
   --profile qwen2-5-7b-instruct-turbo-default \
   --namespace "${KUBEAI_NAMESPACE}"
 
-vllm-stack list-profiles
-vllm-stack describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
-vllm-stack validate
-vllm-stack render
-vllm-stack deploy
-vllm-stack status
+infer-stack list-profiles
+infer-stack describe-profile qwen2-5-7b-instruct-turbo-default --format yaml
+infer-stack validate
+infer-stack render
+infer-stack deploy
+infer-stack status
 ```
 
 ### Current live workaround for the single-GPU example
@@ -702,7 +702,7 @@ kubectl -n "${KUBEAI_NAMESPACE}" patch model qwen2-5-7b-instruct-turbo-default -
 kubectl -n "${KUBEAI_NAMESPACE}" delete pod -l model=qwen2-5-7b-instruct-turbo-default
 ```
 
-If you run `vllm-stack render` or `vllm-stack deploy` again on the current repo version, re-apply this live patch.
+If you run `infer-stack render` or `infer-stack deploy` again on the current repo version, re-apply this live patch.
 
 ---
 
@@ -711,15 +711,15 @@ If you run `vllm-stack render` or `vllm-stack deploy` again on the current repo 
 On a 4-GPU host, do the same **single-GPU smoke test first** to verify the cluster, KubeAI, runtime class, and model plumbing. That exact sequence worked on a 4-GPU machine during bring-up.
 
 ```bash
-vllm-stack setup \
+infer-stack setup \
   --backend kubeai \
   --profile qwen2-5-7b-instruct-turbo-default \
   --namespace "${KUBEAI_NAMESPACE}"
 
-vllm-stack validate
-vllm-stack render
-vllm-stack deploy
-vllm-stack status
+infer-stack validate
+infer-stack render
+infer-stack deploy
+infer-stack status
 
 kubectl -n "${KUBEAI_NAMESPACE}" patch model qwen2-5-7b-instruct-turbo-default --type merge -p '{
   "spec": {
@@ -769,7 +769,7 @@ If that works, the KubeAI front door is alive.
 ### Then try the smoke test
 
 ```bash
-vllm-stack smoke-test \
+infer-stack smoke-test \
   --base-url http://127.0.0.1:8000/openai/v1 \
   --model qwen2-5-7b-instruct-turbo-default
 ```
@@ -901,16 +901,16 @@ upstream connection errors until vLLM finishes loading the new model.
 Use the dedicated readiness and diagnostics commands after a switch:
 
 ```bash
-vllm-stack switch gpt2-single --apply --yes
-vllm-stack wait-ready --model gpt2
-vllm-stack smoke-test --model gpt2
+infer-stack switch gpt2-single --apply --yes
+infer-stack wait-ready --model gpt2
+infer-stack smoke-test --model gpt2
 ```
 
 For debugging, use:
 
 ```bash
-vllm-stack diagnose --model gpt2 --generation
-vllm-stack diagnose --logs --tail 80
+infer-stack diagnose --model gpt2 --generation
+infer-stack diagnose --logs --tail 80
 ```
 
 `diagnose` prints the resolved provider/gateway/frontend graph, rendered Compose

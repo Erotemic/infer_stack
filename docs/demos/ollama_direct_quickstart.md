@@ -14,7 +14,7 @@ Ollama CLI or through Open WebUI.
 
 - Docker with the NVIDIA container runtime.
 - `nvidia-smi` works on the host and from GPU-enabled containers.
-- `vllm-stack` installed in your Python environment.
+- `infer-stack` installed in your Python environment.
 
 This path is useful for GTX 1080 Ti systems because Ollama supports Pascal
 GPUs, while current official vLLM images require newer CUDA compute capability.
@@ -22,12 +22,12 @@ GPUs, while current official vLLM images require newer CUDA compute capability.
 ## 1. Set up the profile
 
 ```bash
-mkdir -p /data/service/docker/vllm-stack
-vllm-stack setup \
+mkdir -p /data/service/docker/infer-stack
+infer-stack setup \
   --backend compose \
   --profile ollama-direct \
-  --state-root /data/service/docker/vllm-stack \
-  --generated-dir /data/service/docker/vllm-stack/generated
+  --state-root /data/service/docker/infer-stack \
+  --generated-dir /data/service/docker/infer-stack/generated
 ```
 
 For a two-card 1080 Ti machine, the built-in profile pins Ollama to GPUs
@@ -44,8 +44,8 @@ max_queue: 8
 ## 2. Render and start
 
 ```bash
-vllm-stack render --yes --simulate-hardware 2x11
-vllm-stack up -d
+infer-stack render --yes --simulate-hardware 2x11
+infer-stack up -d
 ```
 
 Expected rendered services:
@@ -72,38 +72,38 @@ Open WebUI is available at <http://127.0.0.1:13000>. Ollama is published on
 Start with a small model before trying larger ones:
 
 ```bash
-vllm-stack ollama-pull qwen3.5:4b
+infer-stack ollama-pull qwen3.5:4b
 ```
 
 Other good initial candidates for 11 GiB cards:
 
 ```bash
-vllm-stack ollama-pull qwen3.5:2b
-vllm-stack ollama-pull qwen3.5:9b-q4_K_M
-vllm-stack ollama-pull gemma4:e2b
+infer-stack ollama-pull qwen3.5:2b
+infer-stack ollama-pull qwen3.5:9b-q4_K_M
+infer-stack ollama-pull gemma4:e2b
 ```
 
 Run a direct API check through the CLI smoke test. It uses Ollama's native API
 for direct-Ollama profiles and reads rendered runtime settings automatically:
 
 ```bash
-vllm-stack smoke-test --model qwen3.5:4b
+infer-stack smoke-test --model qwen3.5:4b
 ```
 
 ## 4. Day-to-day operations
 
 ```bash
-vllm-stack ps
-vllm-stack logs -f ollama
-vllm-stack down
-vllm-stack up -d
+infer-stack ps
+infer-stack logs -f ollama
+infer-stack down
+infer-stack up -d
 ```
 
 Inspect loaded models and where they live:
 
 ```bash
-vllm-stack ollama-list
-vllm-stack ollama-ps
+infer-stack ollama-list
+infer-stack ollama-ps
 ```
 
 ## 5. When to add LiteLLM
@@ -113,7 +113,7 @@ backend. Switch to an Ollama gateway profile when you want a stable OpenAI
 `/v1` route name that can later move to vLLM:
 
 ```bash
-vllm-stack switch ollama-qwen3.5-4b-gateway --apply
+infer-stack switch ollama-qwen3.5-4b-gateway --apply
 ```
 
 That changes the shape to:

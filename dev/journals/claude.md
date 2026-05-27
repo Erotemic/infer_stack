@@ -273,3 +273,30 @@ Design takeaways:
    constraint when changing where artifacts land. Preserving a
    `<root>/<dirname>` fallback in the renderer itself avoided a sweeping
    test refactor and kept the abstraction useful for ad-hoc tooling.
+
+## 2026-05-27 14:25:00 -0500
+
+Model: claude-sonnet-4-6 (via eval_audit harness).
+
+**User intent:** Rename the package from `vllm_service`/`vllm-stack` to `infer_stack`/`infer-stack`. The motivation was twofold: (1) CLI name (`vllm-stack`) and module name (`vllm_service`) diverged — a persistent source of friction; (2) the service now supports ollama alongside vllm, making the "vllm" prefix misleading. No backwards compatibility needed.
+
+**What changed:**
+- Python package directory: `vllm_service/` → `infer_stack/`
+- PyPI package name: `vllm-litellm-autoconfig` → `infer-stack`
+- CLI entry point: `vllm-stack` → `infer-stack`
+- All Python imports: `from vllm_service.*` → `from infer_stack.*`
+- Environment variables: `VLLM_SERVICE_*` → `INFER_STACK_*`
+- XDG app dirs: `~/.config/vllm_service/` → `~/.config/infer_stack/`
+- Kubernetes annotation namespace: `vllm-service/` → `infer-stack/`
+- Package description: "vLLM stacks" → "inference stacks"
+- `manage.py`, `README.md`, all docs, tests, scripts, examples updated
+- `dev/journals/` left untouched (historical record)
+
+**Design notes:**
+- `infer_stack` / `infer-stack` achieves the desired consistency: module name uses underscores, CLI uses hyphens, both share the same stem.
+- "infer" is deliberately generic — accommodates vllm, ollama, and any future backends (vision, specialized runtimes) without re-renaming.
+- Template files like `default-vllm-models.yaml` keep their names — those describe the vllm *backend*, not the package identity.
+
+**Confidence:** High. The rename is purely mechanical (string substitution + directory mv). All 22 Python files compile cleanly. No residual `vllm_service`/`vllm-stack`/`VLLM_SERVICE` references remain outside historical journal entries and the tarball artifact.
+
+**Next steps for the user:** Update `eval_audit` (the parent repo) to reference `infer_stack` instead of `vllm_service` in any imports, config references, or scripts that use the submodule. The GitHub remote rename is also handled separately by the user.

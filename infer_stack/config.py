@@ -16,7 +16,7 @@ MODELS_FILE = Path("models.yaml")
 
 # Filenames/sub-paths inside whatever the resolved generated directory is.
 # The directory itself is configurable per machine and per user via
-# ``output.generated_dir`` in config.yaml, the ``VLLM_SERVICE_GENERATED_DIR``
+# ``output.generated_dir`` in config.yaml, the ``INFER_STACK_GENERATED_DIR``
 # env var, or the ``--generated-dir`` CLI flag.
 GENERATED_DIR_NAME = "generated"
 PLAN_FILENAME = "plan.yaml"
@@ -74,7 +74,7 @@ def normalized_output(output_cfg: dict[str, Any] | None) -> dict[str, str]:
 
     Relative ``generated_dir`` values are anchored on ``data_root()`` so
     that a config that says ``generated_dir: generated`` lands at
-    ``<data_root>/generated`` regardless of where ``vllm-stack`` is
+    ``<data_root>/generated`` regardless of where ``infer-stack`` is
     invoked from.
     """
     normalized = deepcopy(default_output_config())
@@ -187,7 +187,7 @@ def normalized_state(state: dict[str, Any] | None) -> dict[str, str]:
     """Resolve ``state.*`` to absolute paths.
 
     Relative values are anchored on ``data_root()`` so that bind-mount
-    locations don't depend on where ``vllm-stack`` was invoked from.
+    locations don't depend on where ``infer-stack`` was invoked from.
     """
     normalized = deepcopy(default_state_paths())
     anchor = data_root()
@@ -215,7 +215,7 @@ def save_yaml(path: Path, data: dict[str, Any]) -> None:
 
 
 def _load_template_yaml(name: str) -> dict[str, Any]:
-    text = files("vllm_service").joinpath(f"templates/{name}").read_text(encoding="utf-8")
+    text = files("infer_stack").joinpath(f"templates/{name}").read_text(encoding="utf-8")
     return yaml.safe_load(text) or {}
 
 

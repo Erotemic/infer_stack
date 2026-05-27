@@ -1,30 +1,30 @@
-"""CWD-independent locations for the vllm-stack config and runtime data.
+"""CWD-independent locations for the infer-stack config and runtime data.
 
 The CLI used to anchor every path on ``Path.cwd()``, which meant invoking
-``vllm-stack`` from a different directory silently changed where config
+``infer-stack`` from a different directory silently changed where config
 was read from, where rendered artifacts landed, and where bind-mount
 state lived. This module replaces that with two stable roots:
 
 * ``config_root()`` — where ``config.yaml`` / ``models.yaml`` /
   ``kubeai-values.local.yaml`` live. Defaults to
-  ``ub.Path.appdir('vllm_service', type='config')`` (``~/.config/vllm_service``
+  ``ub.Path.appdir('infer_stack', type='config')`` (``~/.config/infer_stack``
   on Linux, respecting ``XDG_CONFIG_HOME``).
 * ``data_root()`` — where ``generated/`` (rendered artifacts) and
   ``state/`` (hf-cache, postgres volumes, runtime bind-mounts) default
-  to. ``ub.Path.appdir('vllm_service', type='data')``
-  (``~/.local/share/vllm_service`` on Linux, respecting
+  to. ``ub.Path.appdir('infer_stack', type='data')``
+  (``~/.local/share/infer_stack`` on Linux, respecting
   ``XDG_DATA_HOME``). Uses ``data`` and not ``cache`` because the stack
   hosts persistent state — postgres databases, Open WebUI chat history,
   and user accounts — that would be silently lost if treated as
   regenerable cache by a system cleanup tool.
 
-Both can be overridden by env vars (``VLLM_SERVICE_CONFIG_DIR`` /
-``VLLM_SERVICE_DATA_DIR``) or by the CLI flags ``--config-dir`` /
+Both can be overridden by env vars (``INFER_STACK_CONFIG_DIR`` /
+``INFER_STACK_DATA_DIR``) or by the CLI flags ``--config-dir`` /
 ``--data-dir``. The CLI flags translate into process-wide overrides via
 ``set_config_root`` / ``set_data_root``.
 
-Per-knob overrides (``VLLM_SERVICE_GENERATED_DIR``,
-``VLLM_SERVICE_STATE_ROOT``, ``output.generated_dir`` in ``config.yaml``,
+Per-knob overrides (``INFER_STACK_GENERATED_DIR``,
+``INFER_STACK_STATE_ROOT``, ``output.generated_dir`` in ``config.yaml``,
 etc.) continue to apply on top of these roots.
 """
 from __future__ import annotations
@@ -35,19 +35,19 @@ from pathlib import Path
 import ubelt as ub
 
 
-CONFIG_DIR_ENV = "VLLM_SERVICE_CONFIG_DIR"
-DATA_DIR_ENV = "VLLM_SERVICE_DATA_DIR"
+CONFIG_DIR_ENV = "INFER_STACK_CONFIG_DIR"
+DATA_DIR_ENV = "INFER_STACK_DATA_DIR"
 
 _config_root_override: Path | None = None
 _data_root_override: Path | None = None
 
 
 def _default_config_root() -> Path:
-    return Path(ub.Path.appdir("vllm_service", type="config"))
+    return Path(ub.Path.appdir("infer_stack", type="config"))
 
 
 def _default_data_root() -> Path:
-    return Path(ub.Path.appdir("vllm_service", type="data"))
+    return Path(ub.Path.appdir("infer_stack", type="data"))
 
 
 def config_root() -> Path:

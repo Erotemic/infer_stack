@@ -1,4 +1,4 @@
-# LoRA Integration Plan — vllm_service (dev prototype)
+# LoRA Integration Plan — infer_stack (dev prototype)
 
 Date: 2026-05-20
 
@@ -29,10 +29,10 @@ Approach (brief)
 Detailed Steps
 --------------
 1. Add dev utilities
-   - `submodules/vllm_service/dev/lora/merge_lora.py` (core API).
-   - `submodules/vllm_service/dev/lora/cli.py` (thin CLI wrapper for manual testing).
-   - `submodules/vllm_service/dev/lora/requirements-dev.txt` (pins: transformers, peft, safetensors, torch).
-   - `submodules/vllm_service/dev/lora/README.md` (usage & limitations).
+   - `submodules/infer_stack/dev/lora/merge_lora.py` (core API).
+   - `submodules/infer_stack/dev/lora/cli.py` (thin CLI wrapper for manual testing).
+   - `submodules/infer_stack/dev/lora/requirements-dev.txt` (pins: transformers, peft, safetensors, torch).
+   - `submodules/infer_stack/dev/lora/README.md` (usage & limitations).
 
 2. Propagate profile hint
    - Update resolver to preserve a `lora` hint on resolved services
@@ -63,12 +63,12 @@ Detailed Steps
 
 Files to create / modify
 ------------------------
-- Create: `submodules/vllm_service/dev/lora/merge_lora.py`  -- merge API.
-- Create: `submodules/vllm_service/dev/lora/cli.py`         -- developer CLI.
-- Create: `submodules/vllm_service/dev/lora/requirements-dev.txt` -- dev deps.
-- Create: `submodules/vllm_service/dev/lora/README.md`      -- instructions.
-- Modify: `submodules/vllm_service/vllm_service/resolver.py` -- propagate `lora` hint.
-- Modify: `submodules/vllm_service/vllm_service/backends/compose_renderer.py` -- call merge helper and patch `svc['hf_model_id']`.
+- Create: `submodules/infer_stack/dev/lora/merge_lora.py`  -- merge API.
+- Create: `submodules/infer_stack/dev/lora/cli.py`         -- developer CLI.
+- Create: `submodules/infer_stack/dev/lora/requirements-dev.txt` -- dev deps.
+- Create: `submodules/infer_stack/dev/lora/README.md`      -- instructions.
+- Modify: `submodules/infer_stack/infer_stack/resolver.py` -- propagate `lora` hint.
+- Modify: `submodules/infer_stack/infer_stack/backends/compose_renderer.py` -- call merge helper and patch `svc['hf_model_id']`.
 
 Merge helper: design notes
 --------------------------
@@ -121,13 +121,13 @@ Developer commands (quick)
 Install dev deps (example):
 
 ```bash
-python -m pip install -r submodules/vllm_service/dev/lora/requirements-dev.txt
+python -m pip install -r submodules/infer_stack/dev/lora/requirements-dev.txt
 ```
 
 Manual merge test:
 
 ```bash
-python submodules/vllm_service/dev/lora/cli.py \
+python submodules/infer_stack/dev/lora/cli.py \
   --base qwen/qwen2.5-7b-instruct-turbo \
   --lora hf-user/lora-repo --revision v1 \
   --out generated/hf-cache/merged_loras/qwen/myprofile-serviceA
@@ -136,7 +136,7 @@ python submodules/vllm_service/dev/lora/cli.py \
 Render after adding `lora` to profile:
 
 ```bash
-cd submodules/vllm_service
+cd submodules/infer_stack
 python manage.py render --profile <profile-with-lora>
 ```
 
@@ -148,4 +148,4 @@ Timeline
 Next steps
 ----------
 Confirm and I will implement the prototype files under
-`submodules/vllm_service/dev/lora/` and the small resolver/renderer hooks.
+`submodules/infer_stack/dev/lora/` and the small resolver/renderer hooks.

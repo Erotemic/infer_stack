@@ -40,7 +40,7 @@ dtype, etc.). On a cold container with an empty cache, vLLM has to
 re-compile; on a warm restart against the same configuration, those artifacts
 are reused.
 
-Default host path: `/data/service/docker/vllm-stack/vllm-cache`. Override via
+Default host path: `/data/service/docker/infer-stack/vllm-cache`. Override via
 `state.vllm_cache` in `config.yaml` or by editing the rendered deployment
 plan. The path is created on first volume mount; no manual `mkdir` is
 required.
@@ -105,15 +105,15 @@ stack:
 
 ```bash
 # Pull refreshed images through the rendered Compose wrapper.
-vllm-stack pull vllm-<profile>
+infer-stack pull vllm-<profile>
 
 # Restart just the one service through the wrapper. This avoids bouncing
 # Postgres / LiteLLM / Open WebUI.
-vllm-stack restart vllm-<profile>
+infer-stack restart vllm-<profile>
 ```
 
-For a full stack restart (e.g. after `vllm-stack render` against a new
-profile), `vllm-stack down && vllm-stack up -d` is the safe path; persistent
+For a full stack restart (e.g. after `infer-stack render` against a new
+profile), `infer-stack down && infer-stack up -d` is the safe path; persistent
 volumes and bind mounts (Postgres, Open WebUI data, Ollama model store, and
 vLLM caches) are not touched by `down`.
 
@@ -121,7 +121,7 @@ For direct Ollama model pulls, operate on the shared daemon instead of replacing
 the container:
 
 ```bash
-vllm-stack ollama-pull qwen3.5:4b
+infer-stack ollama-pull qwen3.5:4b
 ```
 
 ## Verifying the cache is being reused

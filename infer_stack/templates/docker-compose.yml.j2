@@ -53,7 +53,7 @@ services:
       - {{ lock.deployment.state.ollama }}:/root/.ollama
 {% if lock.deployment.providers.ollama.publish_port %}
     ports:
-  - "127.0.0.1:${VLLM_SERVICE_OLLAMA_PORT:-{{ lock.deployment.ports.ollama or 11434 }}}:11434"
+  - "127.0.0.1:${INFER_STACK_OLLAMA_PORT:-{{ lock.deployment.ports.ollama or 11434 }}}:11434"
 {% endif %}
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
@@ -79,10 +79,10 @@ services:
     restart: unless-stopped
     ipc: host
     labels:
-      vllm_service.profile_name: "{{ svc.profile_name }}"
-      vllm_service.public_name: "{{ svc.profile_public_name }}"
-      vllm_service.logical_model_name: "{{ svc.logical_model_name }}"
-      vllm_service.protocol_mode: "{{ svc.protocol_mode }}"
+      infer_stack.profile_name: "{{ svc.profile_name }}"
+      infer_stack.public_name: "{{ svc.profile_public_name }}"
+      infer_stack.logical_model_name: "{{ svc.logical_model_name }}"
+      infer_stack.protocol_mode: "{{ svc.protocol_mode }}"
     environment:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       HF_TOKEN: ${HF_TOKEN}
@@ -143,7 +143,7 @@ services:
       - {{ lock.deployment.state.triton_cache }}:/root/.cache/triton
       - {{ lock.deployment.state.cuda_cache }}:/root/.cache/nvidia/ComputeCache
     ports:
-      - "127.0.0.1:${VLLM_SERVICE_VLLM_{{ loop.index0 }}_PORT:-{{ svc.host_port or (18000 + loop.index0) }}}:8000"
+      - "127.0.0.1:${INFER_STACK_VLLM_{{ loop.index0 }}_PORT:-{{ svc.host_port or (18000 + loop.index0) }}}:8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -186,7 +186,7 @@ services:
     volumes:
       - {{ lock.deployment.state.runtime }}/litellm_config.yaml:/app/config.yaml:ro
     ports:
-      - "${VLLM_SERVICE_LITELLM_PORT:-{{ lock.deployment.ports.litellm or 14042 }}}:4000"
+      - "${INFER_STACK_LITELLM_PORT:-{{ lock.deployment.ports.litellm or 14042 }}}:4000"
 
 {% endif %}
 {% if lock.deployment.frontends.open_webui.enabled %}
@@ -213,5 +213,5 @@ services:
     volumes:
       - {{ lock.deployment.state.open_webui }}:/app/backend/data
     ports:
-      - "${VLLM_SERVICE_OPEN_WEBUI_PORT:-{{ lock.deployment.ports.open_webui or 13000 }}}:8080"
+      - "${INFER_STACK_OPEN_WEBUI_PORT:-{{ lock.deployment.ports.open_webui or 13000 }}}:8080"
 {% endif %}
